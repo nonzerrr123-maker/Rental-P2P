@@ -1,0 +1,11 @@
+"use client";
+
+import { useState } from "react";
+
+const reasons = ["ของเสียหาย", "ของไม่ตรงกับประกาศ", "ไม่คืนของ", "คืนล่าช้า", "ปัญหาเงินประกัน", "ปัญหาอื่น ๆ"];
+
+export default function DisputePage() {
+  const [reason, setReason] = useState("");
+  const [sent, setSent] = useState(false);
+  return <main className="min-h-screen bg-[#f7f7f5] text-neutral-900"><header className="border-b bg-white"><div className="mx-auto flex max-w-5xl justify-between px-6 py-5"><a href="/" className="text-2xl font-black">P2P<span className="text-[#c9a227]">.</span></a><a href="/dashboard" className="rounded-full border px-4 py-2 text-sm font-bold">Dashboard</a></div></header><div className="mx-auto max-w-2xl px-6 py-12"><div className="rounded-3xl border bg-white p-8 shadow-sm"><span className="text-xs font-black tracking-[3px] text-[#a58316]">DISPUTE CENTER</span><h1 className="mt-3 text-3xl font-black">แจ้งปัญหารายการยืม</h1><p className="mt-2 text-neutral-500">Rental R-0001 · PlayStation 5 · Game House</p>{sent ? <div className="mt-8 rounded-2xl bg-[#faf7ed] p-6 text-center ring-1 ring-[#e7d9a8]"><div className="text-4xl">✓</div><h2 className="mt-3 text-xl font-black">ส่งข้อพิพาทแล้ว</h2><p className="mt-1 text-sm text-neutral-500">สถานะ: PENDING_REVIEW · Admin จะตรวจสอบและติดต่อผ่านระบบ</p><a href="/dashboard" className="mt-5 inline-block rounded-full bg-neutral-900 px-5 py-3 text-sm font-bold text-white">กลับ Dashboard</a></div> : <div className="mt-8"><label className="text-sm font-bold">สาเหตุ<select value={reason} onChange={(e) => setReason(e.target.value)} className="mt-2 w-full rounded-2xl border bg-white px-4 py-3"><option value="">เลือกสาเหตุ</option>{reasons.map((r) => <option key={r}>{r}</option>)}</select></label><label className="mt-5 block text-sm font-bold">รายละเอียด<textarea rows={6} placeholder="อธิบายปัญหาและหลักฐานที่เกี่ยวข้อง..." className="mt-2 w-full rounded-2xl border bg-neutral-50 p-4 outline-none focus:border-[#c9a227]" /></label><button disabled={!reason} onClick={() => setSent(true)} className="mt-5 w-full rounded-2xl bg-neutral-900 px-5 py-4 font-black text-white disabled:opacity-30">ส่งข้อพิพาทให้ Admin ตรวจสอบ</button></div>}</div></div></main>;
+}
