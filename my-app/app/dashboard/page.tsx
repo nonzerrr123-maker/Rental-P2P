@@ -1,0 +1,24 @@
+"use client";
+
+import { useState } from "react";
+
+type Request = { id: string; item: string; borrower: string; lender: string; dates: string; total: number; status: "PENDING" | "ACCEPTED" | "REJECTED" };
+
+const initialRequests: Request[] = [
+  { id: "R-0001", item: "PlayStation 5", borrower: "Demo User", lender: "Game House", dates: "15–18 Aug 2026", total: 900, status: "PENDING" },
+  { id: "R-0002", item: "เต็นท์ 4 คน", borrower: "Nida", lender: "Camp Ubon", dates: "20–22 Aug 2026", total: 600, status: "ACCEPTED" },
+];
+
+export default function DashboardPage() {
+  const [requests, setRequests] = useState(initialRequests);
+  const [role, setRole] = useState<"BORROWER" | "LENDER">("LENDER");
+
+  const changeStatus = (id: string, status: "ACCEPTED" | "REJECTED") => setRequests((current) => current.map((r) => r.id === id ? { ...r, status } : r));
+  const incoming = requests.filter((r) => r.lender === "Game House");
+  const outgoing = requests.filter((r) => r.borrower === "Demo User");
+
+  return <main className="min-h-screen bg-gray-50 text-black"><header className="border-b bg-black px-6 py-5 text-white"><div className="mx-auto flex max-w-6xl items-center justify-between"><a href="/" className="text-2xl font-black">P2P<span className="text-[#D4AF37]">.</span></a><a href="/chat" className="text-sm text-gray-300 hover:text-white">💬 Chat</a></div></header><div className="mx-auto max-w-6xl px-6 py-12"><div className="flex flex-col justify-between gap-5 md:flex-row md:items-end"><div><p className="text-sm font-bold tracking-[3px] text-[#B08D18]">MY RENTALS</p><h1 className="mt-2 text-4xl font-black">Dashboard</h1><p className="mt-2 text-gray-500">จัดการคำขอยืมและรายการที่คุณให้ยืม</p></div><div className="flex rounded-lg border bg-white p-1"><button onClick={() => setRole("BORROWER")} className={`rounded-md px-4 py-2 text-sm font-bold ${role === "BORROWER" ? "bg-black text-white" : ""}`}>ฉันเป็นผู้ยืม</button><button onClick={() => setRole("LENDER")} className={`rounded-md px-4 py-2 text-sm font-bold ${role === "LENDER" ? "bg-black text-white" : ""}`}>ฉันเป็นผู้ให้ยืม</button></div></div>
+<div className="mt-8 grid gap-5 sm:grid-cols-3"><div className="rounded-2xl border bg-white p-6"><p className="text-sm text-gray-500">กำลังดำเนินการ</p><p className="mt-2 text-4xl font-black">{requests.filter(r => r.status === "PENDING").length}</p></div><div className="rounded-2xl border bg-white p-6"><p className="text-sm text-gray-500">รับ/ให้ยืมสำเร็จ</p><p className="mt-2 text-4xl font-black">{requests.filter(r => r.status === "ACCEPTED").length}</p></div><div className="rounded-2xl border bg-white p-6"><p className="text-sm text-gray-500">ยอดค่าเช่ารวม</p><p className="mt-2 text-4xl font-black">฿{requests.filter(r => r.status === "ACCEPTED").reduce((sum, r) => sum + r.total, 0).toLocaleString()}</p></div></div>
+<section className="mt-8 rounded-2xl border bg-white"><div className="border-b p-6"><h2 className="text-xl font-bold">{role === "LENDER" ? "คำขอที่เข้ามา" : "คำขอที่ฉันส่ง"}</h2><p className="mt-1 text-sm text-gray-500">{role === "LENDER" ? "ตรวจสอบรายละเอียดแล้วเลือก Accept หรือ Reject" : "ติดตามสถานะการขอยืมของคุณ"}</p></div><div className="divide-y">{(role === "LENDER" ? incoming : outgoing).map((r) => <div key={r.id} className="p-6"><div className="flex flex-col justify-between gap-4 md:flex-row md:items-center"><div><div className="flex items-center gap-3"><h3 className="font-bold">{r.item}</h3><span className={`rounded-full px-3 py-1 text-xs font-bold ${r.status === "PENDING" ? "bg-yellow-100 text-yellow-800" : r.status === "ACCEPTED" ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}`}>{r.status}</span></div><p className="mt-2 text-sm text-gray-500">{r.id} · {r.dates} · ฿{r.total.toLocaleString()}</p><p className="mt-1 text-sm text-gray-500">ผู้ยืม: {r.borrower} · ผู้ให้ยืม: {r.lender}</p></div>{r.status === "PENDING" && role === "LENDER" && <div className="flex gap-3"><button onClick={() => changeStatus(r.id, "REJECTED")} className="rounded-lg border border-red-200 px-4 py-2 text-sm font-bold text-red-600 hover:bg-red-50">Reject</button><button onClick={() => changeStatus(r.id, "ACCEPTED")} className="rounded-lg bg-black px-4 py-2 text-sm font-bold text-white hover:bg-gray-800">Accept</button></div>}{r.status !== "PENDING" && <a href="/chat" className="rounded-lg border px-4 py-2 text-sm font-bold hover:border-[#D4AF37]">💬 เปิดแชต</a>}</div></div>)}{(role === "LENDER" ? incoming : outgoing).length === 0 && <div className="p-10 text-center text-gray-500">ยังไม่มีคำขอ</div>}</div></section>
+<div className="mt-6 flex flex-wrap gap-3"><a href="/lend" className="rounded-lg bg-[#D4AF37] px-5 py-3 font-bold">+ ลงของให้ยืม</a><a href="/rent" className="rounded-lg border bg-white px-5 py-3 font-bold">ค้นหาของให้ยืม</a></div></div></main>;
+}
