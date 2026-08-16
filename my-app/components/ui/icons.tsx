@@ -3,22 +3,7 @@ import type { SVGProps } from "react";
 export type IconProps = SVGProps<SVGSVGElement> & { size?: number };
 
 function IconBase({ size = 20, children, ...props }: IconProps & { children: React.ReactNode }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width={size}
-      height={size}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      {...props}
-    >
-      {children}
-    </svg>
-  );
+  return <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>{children}</svg>;
 }
 
 export function SearchIcon(props: IconProps) { return <IconBase {...props}><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></IconBase>; }
@@ -49,3 +34,5 @@ export function LogOutIcon(props: IconProps) { return <IconBase {...props}><path
 export function LayoutDashboardIcon(props: IconProps) { return <IconBase {...props}><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></IconBase>; }
 export function SparkleIcon(props: IconProps) { return <IconBase {...props}><path d="m12 3 1.2 3.8L17 8l-3.8 1.2L12 13l-1.2-3.8L7 8l3.8-1.2L12 3Z"/><path d="m18 14 .7 2.3L21 17l-2.3.7L18 20l-.7-2.3L15 17l2.3-.7L18 14Z"/></IconBase>; }
 export function CameraIcon(props: IconProps) { return <IconBase {...props}><path d="M4 7h3l1.5-2h7L17 7h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z"/><circle cx="12" cy="13" r="4"/></IconBase>; }
+export function CreditCardIcon(props: IconProps) { return <IconBase {...props}><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h3"/></IconBase>; }
+export function SendIcon(props: IconProps) { return <IconBase {...props}><path d="m22 2-7 20-4-9-9-4 20-7Z"/><path d="M22 2 11 13"/></IconBase>; }
