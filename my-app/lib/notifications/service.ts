@@ -54,6 +54,12 @@ export async function createNotification(
 ): Promise<string | null> {
   const relatedType = input.relatedEntityType?.trim() || null;
   const relatedId = input.relatedEntityId ?? null;
+  if (input.idempotent) {
+    await client.query(
+      `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+      [`${input.userId}:${input.type}:${relatedType ?? ""}:${relatedId ?? ""}`],
+    );
+  }
   const idempotentClause = input.idempotent
     ? `AND NOT EXISTS (
          SELECT 1
