@@ -23,31 +23,44 @@ export default function NotificationsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const load = async () => {
-    const response = await fetch("/api/notifications?limit=100", { cache: "no-store" });
-    const payload = await response.json();
-    if (!response.ok || !payload.ok) throw new Error(payload.message || "โหลดการแจ้งเตือนไม่สำเร็จ");
-    setItems(payload.items as NotificationSummary[]);
-    setUnreadCount(Number(payload.unreadCount || 0));
-  };
-
   useEffect(() => {
     let active = true;
-    const run = async () => {
-      try {
-        await load();
-        if (active) setError("");
-      } catch (cause) {
-        if (active) setError(cause instanceof Error ? cause.message : "โหลดการแจ้งเตือนไม่สำเร็จ");
-      } finally {
-        if (active) setLoading(false);
-      }
+    const applyPayload = (payload: { ok?: boolean; items?: NotificationSummary[]; unreadCount?: number }) => {
+      if (!active || !payload.ok) return;
+      setItems(payload.items ?? []);
+      setUnreadCount(Number(payload.unreadCount || 0));
+      setError("");
     };
-    void run();
-    const interval = window.setInterval(() => {
-      if (!document.hidden) void run();
-    }, 5000);
-    const onVisibility = () => { if (!document.hidden) void run(); };
+    const refresh = () => {
+      if (document.hidden) return;
+      fetch("/api/notifications?limit=100", { cache: "no-store" })
+        .then(async (response) => {
+          const payload = await response.json();
+          if (!response.ok || !payload.ok) throw new Error(payload.message || "โหลดการแจ้งเตือนไม่สำเร็จ");
+          return payload;
+        })
+        .then(applyPayload)
+        .catch((cause: unknown) => {
+          if (active) setError(cause instanceof Error ? cause.message : "โหลดการแจ้งเตือนไม่สำเร็จ");
+        });
+    };
+
+    fetch("/api/notifications?limit=100", { cache: "no-store" })
+      .then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.message || "โหลดการแจ้งเตือนไม่สำเร็จ");
+        return payload;
+      })
+      .then(applyPayload)
+      .catch((cause: unknown) => {
+        if (active) setError(cause instanceof Error ? cause.message : "โหลดการแจ้งเตือนไม่สำเร็จ");
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    const interval = window.setInterval(refresh, 5000);
+    const onVisibility = () => { if (!document.hidden) refresh(); };
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       active = false;
