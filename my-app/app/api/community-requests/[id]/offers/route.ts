@@ -3,6 +3,7 @@ import { authorizationErrorResponse, requireVerifiedUser } from "@/lib/auth/auth
 import {
   CommunityError,
   createCommunityOffer,
+  expireStaleCommunityRequests,
   listCommunityOffersForViewer,
 } from "@/lib/community/service";
 
@@ -40,6 +41,7 @@ export async function POST(
   try {
     const user = await requireVerifiedUser();
     const { id } = await params;
+    await expireStaleCommunityRequests();
     let body: unknown;
     try {
       body = await request.json();
