@@ -2,6 +2,9 @@ import type { QueryResultRow } from "pg";
 import { query } from "@/lib/db";
 import { ITEM_CONDITIONS, type ItemCondition } from "@/lib/rental/listings";
 
+export const NEARBY_RADIUS_OPTIONS = [5, 10, 20, 50] as const;
+export const NEARBY_RADIUS_MAX_KM = 50;
+
 export type MarketplacePricingMode = "HOUR" | "DAY";
 export type MarketplaceSort = "newest" | "price_asc" | "price_desc" | "distance";
 
@@ -33,6 +36,7 @@ export type PublicRentalCard = {
   dailyRate: string | null;
   depositAmount: string;
   urgentEnabled: boolean;
+  urgentAvailableNow: boolean;
   province: string;
   district: string | null;
   subdistrict: string | null;
@@ -86,6 +90,7 @@ type MarketplaceRow = QueryResultRow & {
   daily_rate: string | null;
   deposit_amount: string;
   urgent_enabled: boolean;
+  available_now: boolean;
   province: string;
   district: string | null;
   subdistrict: string | null;
@@ -194,7 +199,7 @@ export function parseMarketplaceFilters(params: URLSearchParams): MarketplaceFil
 
   const latitude = optionalNumber(params, "lat", -90, 90, errors);
   const longitude = optionalNumber(params, "lng", -180, 180, errors);
-  const radiusKm = optionalNumber(params, "radiusKm", 1, 100, errors);
+  const radiusKm = optionalNumber(params, "radiusKm", 1, NEARBY_RADIUS_MAX_KM, errors);
   if ((latitude === null) !== (longitude === null)) {
     errors.location = "Latitude และ Longitude ต้องระบุพร้อมกัน";
   }
@@ -203,13 +208,16 @@ export function parseMarketplaceFilters(params: URLSearchParams): MarketplaceFil
   }
 
   const rawSort = firstValue(params.get("sort"));
+  const normalizedSort = rawSort === "nearest" ? "distance" : rawSort;
   const allowedSorts: MarketplaceSort[] = ["newest", "price_asc", "price_desc", "distance"];
-  let sort: MarketplaceSort = allowedSorts.includes(rawSort as MarketplaceSort)
-    ? (rawSort as MarketplaceSort)
+  let sort: MarketplaceSort = allowedSorts.includes(normalizedSort as MarketplaceSort)
+    ? (normalizedSort as MarketplaceSort)
     : radiusKm !== null
       ? "distance"
       : "newest";
-  if (rawSort && !allowedSorts.includes(rawSort as MarketplaceSort)) errors.sort = "การเรียงลำดับไม่ถูกต้อง";
+  if (rawSort && rawSort !== "nearest" && !allowedSorts.includes(rawSort as MarketplaceSort)) {
+    errors.sort = "การเรียงลำดับไม่ถูกต้อง";
+  }
   if (sort === "distance" && (latitude === null || longitude === null)) {
     sort = "newest";
     errors.sort = "การเรียงตามระยะทางต้องมีตำแหน่งปัจจุบัน";
@@ -250,6 +258,7 @@ function mapMarketplaceRow(row: MarketplaceRow): PublicRentalCard {
     dailyRate: row.daily_rate,
     depositAmount: row.deposit_amount,
     urgentEnabled: row.urgent_enabled,
+    urgentAvailableNow: row.urgent_enabled && row.available_now,
     province: row.province,
     district: row.district,
     subdistrict: row.subdistrict,
@@ -265,6 +274,57 @@ function mapMarketplaceRow(row: MarketplaceRow): PublicRentalCard {
   };
 }
 
+function availabilityNowExpression(alias = "ri"): string {
+  return `(
+    NOT EXISTS (
+      SELECT 1
+      FROM item_availability_blocks availability_block
+      WHERE availability_block.item_id = ${alias}.id
+        AND availability_block.starts_at <= now()
+        AND availability_block.ends_at > now()
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM rental_requests active_request
+      WHERE active_request.item_id = ${alias}.id
+        AND active_request.status IN ('ACCEPTED','WAITING_PAYMENT','PAID','WAITING_PICKUP','RENTING','RETURNING','DISPUTED')
+        AND active_request.starts_at <= now()
+        AND active_request.ends_at > now()
+        AND (
+          active_request.is_urgent = false
+          OR active_request.reservation_expires_at IS NULL
+          OR active_request.reservation_expires_at > now()
+        )
+    )
+  )`;
+}
+
+function addBoundingBoxConditions(
+  conditions: string[],
+  bind: (value: unknown) => string,
+  latitude: number,
+  longitude: number,
+  radiusKm: number,
+): void {
+  const latitudeDelta = radiusKm / 111.32;
+  const minimumLatitude = Math.max(-90, latitude - latitudeDelta);
+  const maximumLatitude = Math.min(90, latitude + latitudeDelta);
+  conditions.push(`ri.latitude BETWEEN ${bind(minimumLatitude)} AND ${bind(maximumLatitude)}`);
+
+  const longitudeScale = Math.max(Math.abs(Math.cos(latitude * Math.PI / 180)), 0.01);
+  const longitudeDelta = Math.min(180, radiusKm / (111.32 * longitudeScale));
+  const minimumLongitude = longitude - longitudeDelta;
+  const maximumLongitude = longitude + longitudeDelta;
+
+  if (minimumLongitude < -180) {
+    conditions.push(`(ri.longitude >= ${bind(minimumLongitude + 360)} OR ri.longitude <= ${bind(maximumLongitude)})`);
+  } else if (maximumLongitude > 180) {
+    conditions.push(`(ri.longitude >= ${bind(minimumLongitude)} OR ri.longitude <= ${bind(maximumLongitude - 360)})`);
+  } else {
+    conditions.push(`ri.longitude BETWEEN ${bind(minimumLongitude)} AND ${bind(maximumLongitude)}`);
+  }
+}
+
 export async function searchPublicRentalItems(filters: MarketplaceFilters): Promise<MarketplaceResult> {
   const values: unknown[] = [];
   const bind = (value: unknown) => {
@@ -273,6 +333,7 @@ export async function searchPublicRentalItems(filters: MarketplaceFilters): Prom
   };
 
   const conditions = ["ri.status = 'ACTIVE'"];
+  const availableNow = availabilityNowExpression();
 
   if (filters.q) {
     const parameter = bind(`%${filters.q}%`);
@@ -289,7 +350,10 @@ export async function searchPublicRentalItems(filters: MarketplaceFilters): Prom
   if (filters.condition) conditions.push(`ri.condition = ${bind(filters.condition)}::item_condition`);
   if (filters.pricingMode === "HOUR") conditions.push("ri.hourly_rate IS NOT NULL");
   if (filters.pricingMode === "DAY") conditions.push("ri.daily_rate IS NOT NULL");
-  if (filters.urgent) conditions.push("ri.urgent_enabled = true");
+  if (filters.urgent) {
+    conditions.push("ri.urgent_enabled = true");
+    conditions.push(availableNow);
+  }
 
   const rateColumn = filters.pricingMode === "HOUR"
     ? "ri.hourly_rate"
@@ -322,6 +386,7 @@ export async function searchPublicRentalItems(filters: MarketplaceFilters): Prom
     )))`;
     if (filters.radiusKm !== null) {
       conditions.push("ri.latitude IS NOT NULL AND ri.longitude IS NOT NULL");
+      addBoundingBoxConditions(conditions, bind, filters.latitude, filters.longitude, filters.radiusKm);
       conditions.push(`${distanceExpression} <= ${bind(filters.radiusKm)}`);
     }
   }
@@ -347,6 +412,7 @@ export async function searchPublicRentalItems(filters: MarketplaceFilters): Prom
        ri.daily_rate,
        ri.deposit_amount,
        ri.urgent_enabled,
+       ${availableNow} AS available_now,
        ri.province,
        ri.district,
        ri.subdistrict,
@@ -388,6 +454,7 @@ export async function getPublicRentalItem(itemId: string): Promise<PublicRentalD
     return null;
   }
 
+  const availableNow = availabilityNowExpression();
   const itemResult = await query<DetailRow>(
     `SELECT
        ri.id,
@@ -400,6 +467,7 @@ export async function getPublicRentalItem(itemId: string): Promise<PublicRentalD
        ri.minimum_hours,
        ri.deposit_amount,
        ri.urgent_enabled,
+       ${availableNow} AS available_now,
        ri.urgent_reservation_fee_rate,
        ri.province,
        ri.district,
@@ -452,16 +520,18 @@ export async function getPublicRentalItem(itemId: string): Promise<PublicRentalD
 export async function listMarketplaceFacets(): Promise<MarketplaceFacets> {
   const [categoryResult, provinceResult] = await Promise.all([
     query<QueryResultRow & { value: string }>(
-      `SELECT DISTINCT category AS value
-       FROM rental_items
-       WHERE status = 'ACTIVE'
+      `SELECT DISTINCT ri.category AS value
+       FROM rental_items ri
+       JOIN users u ON u.id = ri.owner_id AND u.is_active = true
+       WHERE ri.status = 'ACTIVE'
        ORDER BY value ASC
        LIMIT 100`,
     ),
     query<QueryResultRow & { value: string }>(
-      `SELECT DISTINCT province AS value
-       FROM rental_items
-       WHERE status = 'ACTIVE'
+      `SELECT DISTINCT ri.province AS value
+       FROM rental_items ri
+       JOIN users u ON u.id = ri.owner_id AND u.is_active = true
+       WHERE ri.status = 'ACTIVE'
        ORDER BY value ASC
        LIMIT 100`,
     ),
