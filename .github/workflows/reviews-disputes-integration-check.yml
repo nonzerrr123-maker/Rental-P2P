@@ -1,0 +1,203 @@
+name: Reviews disputes integration check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/**"
+      - ".github/workflows/reviews-disputes-integration-check.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "my-app/**"
+      - ".github/workflows/reviews-disputes-integration-check.yml"
+
+jobs:
+  validate-reviews-disputes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: p2p_rental
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d p2p_rental"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/p2p_rental
+      DATABASE_POOL_MAX: 8
+      KYC_PROVIDER: manual
+      PAYMENT_PROVIDER: sandbox
+      SANDBOX_PAYMENT_ENABLED: true
+      OBJECT_STORAGE_ENDPOINT: http://127.0.0.1:9000
+      OBJECT_STORAGE_REGION: us-east-1
+      OBJECT_STORAGE_ACCESS_KEY_ID: minioadmin
+      OBJECT_STORAGE_SECRET_ACCESS_KEY: minioadmin
+      OBJECT_STORAGE_BUCKET: rental-images
+      OBJECT_STORAGE_FORCE_PATH_STYLE: "true"
+      OBJECT_STORAGE_REQUEST_TIMEOUT_MS: 10000
+      NEXT_TELEMETRY_DISABLED: 1
+    defaults:
+      run:
+        working-directory: my-app
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Apply schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+      - name: Start S3-compatible MinIO
+        working-directory: .
+        run: |
+          docker run -d --name dispute-minio -p 9000:9000 -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin minio/minio server /data
+          for attempt in {1..40}; do if curl --fail --silent http://127.0.0.1:9000/minio/health/live >/dev/null; then break; fi; sleep 1; done
+          curl --fail --silent http://127.0.0.1:9000/minio/health/live >/dev/null
+          docker run --rm --network host --entrypoint /bin/sh minio/mc -c 'mc alias set local http://127.0.0.1:9000 minioadmin minioadmin && mc mb --ignore-existing local/rental-images'
+      - name: Lint reviews dispute scope
+        run: >-
+          npx eslint
+          lib/rental/reviews.ts
+          lib/rental/disputes.ts
+          app/api/reviews/route.ts
+          app/api/disputes/route.ts
+          app/api/disputes/[id]/evidence/route.ts
+          app/api/disputes/[id]/evidence/[evidenceId]/content/route.ts
+          app/api/admin/disputes/route.ts
+          app/api/admin/disputes/[id]/review/route.ts
+          app/api/admin/disputes/[id]/resolve/route.ts
+          app/review/page.tsx
+          app/review/review-client.tsx
+          app/dispute/page.tsx
+          app/dispute/dispute-client.tsx
+          app/admin/disputes/page.tsx
+          app/admin/disputes/admin-disputes-client.tsx
+      - name: Build application
+        run: npm run build
+      - name: Start application
+        run: |
+          nohup npm run start -- -p 3000 >/tmp/reviews-disputes-next.log 2>&1 &
+          for attempt in {1..30}; do if curl --fail --silent http://127.0.0.1:3000/api/health/db >/dev/null; then exit 0; fi; sleep 1; done
+          cat /tmp/reviews-disputes-next.log
+          exit 1
+      - name: Register actors and login
+        run: |
+          for spec in 'owner|owner.rd@example.com|owner-password' 'borrower|borrower.rd@example.com|borrower-password' 'stranger|stranger.rd@example.com|stranger-password' 'admin|admin.rd@example.com|admin-password'; do
+            IFS='|' read -r name email password <<<"$spec"
+            curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register -H 'Content-Type: application/json' --data "{\"displayName\":\"$name\",\"email\":\"$email\",\"password\":\"$password\"}" >/dev/null
+          done
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE users SET verification_status='VERIFIED' WHERE email LIKE '%.rd@example.com'; UPDATE users SET role='SUPERADMIN' WHERE email='admin.rd@example.com';"
+          curl --fail --silent -c /tmp/rd-owner.txt -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"owner.rd@example.com","password":"owner-password"}' >/dev/null
+          curl --fail --silent -c /tmp/rd-borrower.txt -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"borrower.rd@example.com","password":"borrower-password"}' >/dev/null
+          curl --fail --silent -c /tmp/rd-stranger.txt -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"stranger.rd@example.com","password":"stranger-password"}' >/dev/null
+          curl --fail --silent -c /tmp/rd-admin.txt -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"admin.rd@example.com","password":"admin-password"}' >/dev/null
+          printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' | base64 -d >/tmp/dispute-proof.png
+      - name: Seed completed review rental and active dispute rentals
+        run: |
+          owner_id=$(psql "$DATABASE_URL" -Atq -c "SELECT id FROM users WHERE email='owner.rd@example.com'")
+          borrower_id=$(psql "$DATABASE_URL" -Atq -c "SELECT id FROM users WHERE email='borrower.rd@example.com'")
+          item_id=$(psql "$DATABASE_URL" -Atq -c "INSERT INTO rental_items(owner_id,title,category,description,condition,daily_rate,deposit_amount,province) VALUES ('$owner_id','Review Camera','กล้อง','completed rental for real review tests','GOOD',500,0,'ชลบุรี') RETURNING id")
+          review_rental=$(psql "$DATABASE_URL" -Atq -c "INSERT INTO rental_requests(item_id,lender_id,borrower_id,pricing_mode,starts_at,ends_at,unit_rate,duration_units,rental_amount,deposit_amount,status,accepted_at,completed_at) VALUES ('$item_id','$owner_id','$borrower_id','DAY','2030-01-01T10:00:00Z','2030-01-02T10:00:00Z',500,1,500,0,'COMPLETED',now(),now()) RETURNING id")
+          echo "$review_rental" >/tmp/review-rental-id
+
+          item2_id=$(psql "$DATABASE_URL" -Atq -c "INSERT INTO rental_items(owner_id,title,category,description,condition,daily_rate,deposit_amount,province) VALUES ('$owner_id','Dispute Camera','กล้อง','active rental for dispute financial freeze tests','GOOD',800,1000,'ชลบุรี') RETURNING id")
+          dispute_rental=$(psql "$DATABASE_URL" -Atq -c "INSERT INTO rental_requests(item_id,lender_id,borrower_id,pricing_mode,starts_at,ends_at,unit_rate,duration_units,rental_amount,deposit_amount,status,accepted_at) VALUES ('$item2_id','$owner_id','$borrower_id','DAY','2030-02-01T10:00:00Z','2030-02-02T10:00:00Z',800,1,800,1000,'RENTING',now()) RETURNING id")
+          rent_payment=$(psql "$DATABASE_URL" -Atq -c "INSERT INTO payments(rental_request_id,payer_id,type,provider,provider_reference,idempotency_key,amount,currency,status,metadata,succeeded_at) VALUES ('$dispute_rental','$borrower_id','RENTAL','SANDBOX','rd-rent-$dispute_rental','rd-rent-$dispute_rental',800,'THB','SUCCEEDED','{\"settlement\":{\"status\":\"PLATFORM_HELD\",\"payoutAmount\":\"800.00\",\"payoutMode\":\"MANUAL_REQUIRED\"}}',now()) RETURNING id")
+          dep_payment=$(psql "$DATABASE_URL" -Atq -c "INSERT INTO payments(rental_request_id,payer_id,type,provider,provider_reference,idempotency_key,amount,currency,status,metadata,succeeded_at) VALUES ('$dispute_rental','$borrower_id','DEPOSIT','SANDBOX','rd-dep-$dispute_rental','rd-dep-$dispute_rental',1000,'THB','SUCCEEDED','{}',now()) RETURNING id")
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "INSERT INTO deposits(rental_request_id,payment_id,amount,status,held_at) VALUES ('$dispute_rental','$dep_payment',1000,'HELD',now());"
+          echo "$dispute_rental" >/tmp/dispute-rental-id
+
+          item3_id=$(psql "$DATABASE_URL" -Atq -c "INSERT INTO rental_items(owner_id,title,category,description,condition,daily_rate,deposit_amount,province) VALUES ('$owner_id','Omise Dispute Lens','เลนส์','returned rental for manual refund dispute resolution','GOOD',600,700,'ชลบุรี') RETURNING id")
+          omise_rental=$(psql "$DATABASE_URL" -Atq -c "INSERT INTO rental_requests(item_id,lender_id,borrower_id,pricing_mode,starts_at,ends_at,unit_rate,duration_units,rental_amount,deposit_amount,status,accepted_at) VALUES ('$item3_id','$owner_id','$borrower_id','DAY','2030-03-01T10:00:00Z','2030-03-02T10:00:00Z',600,1,600,700,'RETURNED',now()) RETURNING id")
+          opay=$(psql "$DATABASE_URL" -Atq -c "INSERT INTO payments(rental_request_id,payer_id,type,provider,provider_reference,idempotency_key,amount,currency,status,metadata,succeeded_at) VALUES ('$omise_rental','$borrower_id','RENTAL','OMISE','chrg_test_rd_rent','rd-rent-$omise_rental',600,'THB','SUCCEEDED','{\"settlement\":{\"status\":\"READY_FOR_PAYOUT\",\"payoutAmount\":\"600.00\",\"payoutMode\":\"MANUAL_REQUIRED\"}}',now()) RETURNING id")
+          odep=$(psql "$DATABASE_URL" -Atq -c "INSERT INTO payments(rental_request_id,payer_id,type,provider,provider_reference,idempotency_key,amount,currency,status,metadata,succeeded_at) VALUES ('$omise_rental','$borrower_id','DEPOSIT','OMISE','chrg_test_rd_dep','rd-dep-$omise_rental',700,'THB','SUCCEEDED','{}',now()) RETURNING id")
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "INSERT INTO deposits(rental_request_id,payment_id,amount,status,held_at) VALUES ('$omise_rental','$odep',700,'HELD',now());"
+          echo "$omise_rental" >/tmp/omise-rental-id
+      - name: Review is participant-only server-derived and unique
+        run: |
+          rental_id=$(cat /tmp/review-rental-id)
+          stranger_id=$(psql "$DATABASE_URL" -Atq -c "SELECT id FROM users WHERE email='stranger.rd@example.com'")
+          code=$(curl --silent --output /tmp/stranger-review.json --write-out '%{http_code}' -b /tmp/rd-stranger.txt -X POST http://127.0.0.1:3000/api/reviews -H 'Content-Type: application/json' --data "{\"rentalRequestId\":\"$rental_id\",\"rating\":5}")
+          test "$code" = "403"
+          curl --fail --silent -b /tmp/rd-borrower.txt -X POST http://127.0.0.1:3000/api/reviews -H 'Content-Type: application/json' --data "{\"rentalRequestId\":\"$rental_id\",\"rating\":5,\"comment\":\"ส่งมอบดีมาก\",\"revieweeId\":\"$stranger_id\"}" >/tmp/review-one.json
+          node -e 'const d=require("/tmp/review-one.json"); if(!d.ok || d.review.rating!==5 || d.review.reviewee.displayName!=="owner") process.exit(1)'
+          code=$(curl --silent --output /tmp/review-dup.json --write-out '%{http_code}' -b /tmp/rd-borrower.txt -X POST http://127.0.0.1:3000/api/reviews -H 'Content-Type: application/json' --data "{\"rentalRequestId\":\"$rental_id\",\"rating\":1}")
+          test "$code" = "409"
+          curl --fail --silent -b /tmp/rd-owner.txt -X POST http://127.0.0.1:3000/api/reviews -H 'Content-Type: application/json' --data "{\"rentalRequestId\":\"$rental_id\",\"rating\":4,\"comment\":\"ผู้ยืมดูแลของดี\"}" >/tmp/review-two.json
+          owner_id=$(psql "$DATABASE_URL" -Atq -c "SELECT id FROM users WHERE email='owner.rd@example.com'")
+          borrower_id=$(psql "$DATABASE_URL" -Atq -c "SELECT id FROM users WHERE email='borrower.rd@example.com'")
+          test "$(psql "$DATABASE_URL" -Atq -c "SELECT reviewee_id FROM reviews WHERE rental_request_id='$rental_id' AND reviewer_id='$borrower_id'")" = "$owner_id"
+          test "$(psql "$DATABASE_URL" -Atq -c "SELECT rating_count FROM users WHERE id='$owner_id'")" = "1"
+      - name: Opening dispute freezes lifecycle settlement and protects evidence
+        run: |
+          rental_id=$(cat /tmp/dispute-rental-id)
+          curl --fail --silent -b /tmp/rd-borrower.txt -X POST http://127.0.0.1:3000/api/disputes -F rentalRequestId="$rental_id" -F reason='ของเสียหาย' -F details='พบความเสียหายระหว่างการยืม ขอให้ตรวจหลักฐาน' -F 'files=@/tmp/dispute-proof.png;type=image/png' >/tmp/dispute-open.json
+          node -e 'const d=require("/tmp/dispute-open.json"); if(!d.ok || d.dispute.status!=="OPEN" || d.dispute.evidence.length!==1) process.exit(1); require("fs").writeFileSync("/tmp/dispute-id",d.dispute.id); require("fs").writeFileSync("/tmp/evidence-id",d.dispute.evidence[0].id)'
+          dispute_id=$(cat /tmp/dispute-id); evidence_id=$(cat /tmp/evidence-id)
+          test "$(psql "$DATABASE_URL" -Atq -c "SELECT status FROM rental_requests WHERE id='$rental_id'")" = "DISPUTED"
+          test "$(psql "$DATABASE_URL" -Atq -c "SELECT metadata #>> '{settlement,status}' FROM payments WHERE rental_request_id='$rental_id' AND type='RENTAL'")" = "DISPUTE_HELD"
+          test "$(psql "$DATABASE_URL" -Atq -c "SELECT status FROM deposits WHERE rental_request_id='$rental_id'")" = "HELD"
+          curl --fail --silent -b /tmp/rd-borrower.txt "http://127.0.0.1:3000/api/disputes/$dispute_id/evidence/$evidence_id/content" >/tmp/proof-read.png
+          cmp /tmp/dispute-proof.png /tmp/proof-read.png
+          code=$(curl --silent --output /tmp/proof-stranger --write-out '%{http_code}' -b /tmp/rd-stranger.txt "http://127.0.0.1:3000/api/disputes/$dispute_id/evidence/$evidence_id/content")
+          test "$code" = "403"
+          code=$(curl --silent --output /tmp/dispute-dup.json --write-out '%{http_code}' -b /tmp/rd-owner.txt -X POST http://127.0.0.1:3000/api/disputes -F rentalRequestId="$rental_id" -F reason='duplicate dispute')
+          test "$code" = "409"
+      - name: Admin partial resolution enforces deposit math and audit
+        run: |
+          dispute_id=$(cat /tmp/dispute-id); rental_id=$(cat /tmp/dispute-rental-id)
+          code=$(curl --silent --output /tmp/nonadmin-review.json --write-out '%{http_code}' -b /tmp/rd-borrower.txt -X POST "http://127.0.0.1:3000/api/admin/disputes/$dispute_id/review")
+          test "$code" = "403"
+          curl --fail --silent -b /tmp/rd-admin.txt -X POST "http://127.0.0.1:3000/api/admin/disputes/$dispute_id/review" >/tmp/admin-review.json
+          node -e 'const d=require("/tmp/admin-review.json"); if(d.dispute.status!=="UNDER_REVIEW") process.exit(1)'
+          code=$(curl --silent --output /tmp/over-refund.json --write-out '%{http_code}' -b /tmp/rd-admin.txt -X POST "http://127.0.0.1:3000/api/admin/disputes/$dispute_id/resolve" -H 'Content-Type: application/json' --data '{"resolution":"PARTIAL_DEPOSIT_REFUND","partialRefundAmount":1200,"notes":"ทดสอบยอดคืนเกินเงินประกัน"}')
+          test "$code" = "400"
+          test "$(psql "$DATABASE_URL" -Atq -c "SELECT status FROM deposits WHERE rental_request_id='$rental_id'")" = "HELD"
+          curl --fail --silent -b /tmp/rd-admin.txt -X POST "http://127.0.0.1:3000/api/admin/disputes/$dispute_id/resolve" -H 'Content-Type: application/json' --data '{"resolution":"PARTIAL_DEPOSIT_REFUND","partialRefundAmount":300,"notes":"คืนผู้ยืม 300 และริบส่วนที่เหลือตามหลักฐาน"}' >/tmp/partial-resolve.json
+          node -e 'const d=require("/tmp/partial-resolve.json"); if(!d.ok || d.dispute.status!=="RESOLVED" || d.dispute.rentalStatus!=="RENTING" || d.dispute.deposit.status!=="PARTIALLY_RELEASED" || d.dispute.settlement.status!=="PLATFORM_HELD") process.exit(1)'
+          test "$(psql "$DATABASE_URL" -Atq -c "SELECT amount FROM payments WHERE rental_request_id='$rental_id' AND type='REFUND' AND status='SUCCEEDED'")" = "300.00"
+          test "$(psql "$DATABASE_URL" -Atq -c "SELECT count(*) FROM admin_audit_logs WHERE target_id='$dispute_id' AND action='RESOLVE_DISPUTE'")" = "1"
+      - name: Omise refund stays manual until real reference then completes returned rental
+        run: |
+          rental_id=$(cat /tmp/omise-rental-id)
+          curl --fail --silent -b /tmp/rd-borrower.txt -X POST http://127.0.0.1:3000/api/disputes -F rentalRequestId="$rental_id" -F reason='ปัญหาเงินประกัน' -F details='ขอคืนเงินประกันหลังคืนของ' >/tmp/omise-dispute.json
+          node -e 'const d=require("/tmp/omise-dispute.json"); require("fs").writeFileSync("/tmp/omise-dispute-id",d.dispute.id)'
+          dispute_id=$(cat /tmp/omise-dispute-id)
+          code=$(curl --silent --output /tmp/manual-needed.json --write-out '%{http_code}' -b /tmp/rd-admin.txt -X POST "http://127.0.0.1:3000/api/admin/disputes/$dispute_id/resolve" -H 'Content-Type: application/json' --data '{"resolution":"REFUND_DEPOSIT_FULL","notes":"อนุมัติคืนเงินประกันเต็มจำนวน"}')
+          test "$code" = "409"
+          node -e 'const d=require("/tmp/manual-needed.json"); if(d.code!=="MANUAL_REFUND_REQUIRED") process.exit(1)'
+          test "$(psql "$DATABASE_URL" -Atq -c "SELECT status FROM deposits WHERE rental_request_id='$rental_id'")" = "HELD"
+          test "$(psql "$DATABASE_URL" -Atq -c "SELECT status FROM rental_requests WHERE id='$rental_id'")" = "DISPUTED"
+          curl --fail --silent -b /tmp/rd-admin.txt -X POST "http://127.0.0.1:3000/api/admin/disputes/$dispute_id/resolve" -H 'Content-Type: application/json' --data '{"resolution":"REFUND_DEPOSIT_FULL","notes":"ยืนยันคืนเงินจริงจากบัญชีกลางแล้ว","manualRefundReference":"BANK-DSP-001"}' >/tmp/manual-resolved.json
+          node -e 'const d=require("/tmp/manual-resolved.json"); if(d.dispute.status!=="RESOLVED" || d.dispute.rentalStatus!=="COMPLETED" || d.dispute.deposit.status!=="REFUNDED" || d.dispute.settlement.status!=="READY_FOR_PAYOUT") process.exit(1)'
+          test "$(psql "$DATABASE_URL" -Atq -c "SELECT count(*) FROM payments WHERE rental_request_id='$rental_id' AND type='REFUND' AND provider='MANUAL_BANK' AND provider_reference='BANK-DSP-001' AND amount=700")" = "1"
+      - name: Render real review dispute and admin pages
+        run: |
+          review_id=$(cat /tmp/review-rental-id)
+          dispute_rental=$(cat /tmp/dispute-rental-id)
+          curl --fail --silent -b /tmp/rd-borrower.txt "http://127.0.0.1:3000/review?rentalRequestId=$review_id" >/tmp/review-page.html
+          grep -q 'Review Camera' /tmp/review-page.html
+          ! grep -q 'PlayStation 5' /tmp/review-page.html
+          curl --fail --silent -b /tmp/rd-borrower.txt "http://127.0.0.1:3000/dispute?rentalRequestId=$dispute_rental" >/tmp/dispute-page.html
+          grep -q 'Dispute Camera' /tmp/dispute-page.html
+          ! grep -q 'R-0001' /tmp/dispute-page.html
+          curl --fail --silent -b /tmp/rd-admin.txt http://127.0.0.1:3000/admin/disputes >/tmp/admin-disputes.html
+          grep -q 'Dispute operations' /tmp/admin-disputes.html
+          grep -q 'Dispute Camera' /tmp/admin-disputes.html
+          ! grep -q 'Somchai' /tmp/admin-disputes.html
+      - name: Show logs on failure
+        if: failure()
+        run: cat /tmp/reviews-disputes-next.log || true
