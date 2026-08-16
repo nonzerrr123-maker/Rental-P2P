@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { PoolClient, QueryResultRow } from "pg";
-import { assertResourceOwner, type AuthUser } from "@/lib/auth/authorization";
+import { assertResourceOwner } from "@/lib/auth/authorization";
+import type { AuthUser } from "@/lib/auth/session";
 import { query, withTransaction } from "@/lib/db";
 import { deleteObject, getObject, putObject } from "@/lib/storage/s3";
 
