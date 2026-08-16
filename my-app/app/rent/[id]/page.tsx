@@ -2,6 +2,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getPublicRentalItem } from "@/lib/rental/marketplace";
+import { BookingForm } from "./booking-form";
 
 const money = new Intl.NumberFormat("th-TH", { maximumFractionDigits: 2 });
 
@@ -107,14 +108,16 @@ export default async function RentalDetail({ params }: { params: Promise<{ id: s
               </div>
             </div>
 
-            <button
-              type="button"
-              disabled
-              className="mt-6 w-full cursor-not-allowed rounded-2xl bg-neutral-950 px-5 py-4 font-black text-white opacity-55"
-            >
-              ขอยืม — เปิดใน Booking Phase
-            </button>
-            <p className="mt-3 text-center text-xs text-neutral-400">หน้านี้แสดงข้อมูลจริงแล้ว แต่ยังไม่สร้างคำขอปลอมก่อนระบบ Booking/Availability พร้อม</p>
+            <BookingForm
+              itemId={item.id}
+              hourlyRate={item.hourlyRate}
+              dailyRate={item.dailyRate}
+              minimumHours={item.minimumHours}
+              depositAmount={item.depositAmount}
+            />
+            {item.urgentEnabled && (
+              <p className="mt-3 rounded-xl bg-[#fff8dc] p-3 text-center text-xs font-semibold text-[#806515]">⚡ โหมด “ยืมด่วน” จะเปิดใน TASK 12; คำขอในหน้านี้ยังเป็นการจองปกติ</p>
+            )}
           </section>
         </aside>
       </div>

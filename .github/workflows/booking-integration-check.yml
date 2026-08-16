@@ -1,0 +1,241 @@
+name: Booking integration check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/**"
+      - ".github/workflows/booking-integration-check.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "my-app/**"
+      - ".github/workflows/booking-integration-check.yml"
+
+jobs:
+  validate-booking:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: p2p_rental
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d p2p_rental"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/p2p_rental
+      DATABASE_POOL_MAX: 8
+      ADMIN_EMAIL: superadmin.booking-ci@example.com
+      ADMIN_PASSWORD: booking-ci-superadmin-password
+      KYC_PROVIDER: manual
+      NEXT_TELEMETRY_DISABLED: 1
+
+    defaults:
+      run:
+        working-directory: my-app
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply PostgreSQL schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+
+      - name: Lint booking scope
+        run: >-
+          npx eslint
+          lib/rental/bookings.ts
+          app/api/rental-items/[id]/availability/route.ts
+          app/api/rental-requests/route.ts
+          app/api/rental-requests/[id]/decision/route.ts
+          app/rent/[id]/page.tsx
+          app/rent/[id]/booking-form.tsx
+          app/dashboard/page.tsx
+          app/dashboard/rental-dashboard.tsx
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start application
+        run: |
+          nohup npm run start -- -p 3000 > /tmp/booking-next.log 2>&1 &
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/api/health/db >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/booking-next.log
+          exit 1
+
+      - name: Register booking actors
+        run: |
+          for actor in owner borrower-one borrower-two unverified; do
+            case "$actor" in
+              owner) name="Booking Owner"; email="owner.booking-ci@example.com"; password="owner-booking-password" ;;
+              borrower-one) name="Borrower One"; email="borrower-one.booking-ci@example.com"; password="borrower-one-password" ;;
+              borrower-two) name="Borrower Two"; email="borrower-two.booking-ci@example.com"; password="borrower-two-password" ;;
+              unverified) name="Unverified Borrower"; email="unverified.booking-ci@example.com"; password="unverified-password" ;;
+            esac
+            curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register \
+              -H 'Content-Type: application/json' \
+              --data "{\"displayName\":\"$name\",\"email\":\"$email\",\"password\":\"$password\"}" >/dev/null
+          done
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE users SET verification_status='VERIFIED' WHERE email IN ('owner.booking-ci@example.com','borrower-one.booking-ci@example.com','borrower-two.booking-ci@example.com');"
+
+      - name: Login booking actors
+        run: |
+          curl --fail --silent -c /tmp/booking-owner-cookies.txt -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"owner.booking-ci@example.com","password":"owner-booking-password"}' >/dev/null
+          curl --fail --silent -c /tmp/booking-b1-cookies.txt -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"borrower-one.booking-ci@example.com","password":"borrower-one-password"}' >/dev/null
+          curl --fail --silent -c /tmp/booking-b2-cookies.txt -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"borrower-two.booking-ci@example.com","password":"borrower-two-password"}' >/dev/null
+          curl --fail --silent -c /tmp/booking-unverified-cookies.txt -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"unverified.booking-ci@example.com","password":"unverified-password"}' >/dev/null
+
+      - name: Create listing and owner availability block
+        run: |
+          curl --fail --silent -b /tmp/booking-owner-cookies.txt -X POST http://127.0.0.1:3000/api/rental-items \
+            -H 'Content-Type: application/json' \
+            --data '{"title":"Booking Test Camera","category":"กล้อง","description":"กล้องสำหรับทดสอบระบบ booking และ availability แบบจริง","condition":"GOOD","hourlyRate":80,"dailyRate":650,"minimumHours":2,"depositAmount":3000,"province":"ชลบุรี","district":"เมืองชลบุรี","subdistrict":"แสนสุข"}' >/tmp/booking-item.json
+          node -e 'const d=require("/tmp/booking-item.json"); if(!d.ok) process.exit(1); require("fs").writeFileSync("/tmp/booking-item-id",d.item.id)'
+          item_id=$(cat /tmp/booking-item-id)
+          owner_id=$(psql "$DATABASE_URL" -Atc "SELECT id FROM users WHERE email='owner.booking-ci@example.com'")
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "INSERT INTO item_availability_blocks(item_id,starts_at,ends_at,reason,created_by) VALUES ('$item_id','2030-09-10T10:00:00Z','2030-09-10T12:00:00Z','Owner unavailable','$owner_id');"
+
+      - name: Availability endpoint reports owner block
+        run: |
+          item_id=$(cat /tmp/booking-item-id)
+          curl --fail --silent "http://127.0.0.1:3000/api/rental-items/$item_id/availability?from=2030-09-10T10%3A30%3A00Z&to=2030-09-10T11%3A30%3A00Z" >/tmp/booking-block.json
+          node -e 'const d=require("/tmp/booking-block.json"); if(!d.ok || d.availability.available || d.availability.conflicts[0]?.kind!=="BLOCK") process.exit(1)'
+
+      - name: Guest and unverified users cannot book
+        run: |
+          item_id=$(cat /tmp/booking-item-id)
+          body="{\"itemId\":\"$item_id\",\"pricingMode\":\"HOUR\",\"startsAt\":\"2030-09-11T10:00:00Z\",\"endsAt\":\"2030-09-11T12:00:00Z\"}"
+          code=$(curl --silent --output /tmp/booking-guest.json --write-out '%{http_code}' -X POST http://127.0.0.1:3000/api/rental-requests -H 'Content-Type: application/json' --data "$body")
+          test "$code" = "401"
+          code=$(curl --silent --output /tmp/booking-unverified.json --write-out '%{http_code}' -b /tmp/booking-unverified-cookies.txt -X POST http://127.0.0.1:3000/api/rental-requests -H 'Content-Type: application/json' --data "$body")
+          test "$code" = "403"
+          node -e 'const d=require("/tmp/booking-unverified.json"); if(d.code!=="VERIFICATION_REQUIRED") process.exit(1)'
+
+      - name: Reject self rental minimum duration and blocked time
+        run: |
+          item_id=$(cat /tmp/booking-item-id)
+          code=$(curl --silent --output /tmp/booking-self.json --write-out '%{http_code}' -b /tmp/booking-owner-cookies.txt -X POST http://127.0.0.1:3000/api/rental-requests -H 'Content-Type: application/json' --data "{\"itemId\":\"$item_id\",\"pricingMode\":\"HOUR\",\"startsAt\":\"2030-09-11T10:00:00Z\",\"endsAt\":\"2030-09-11T12:00:00Z\"}")
+          test "$code" = "409"
+          node -e 'const d=require("/tmp/booking-self.json"); if(d.code!=="SELF_RENTAL_NOT_ALLOWED") process.exit(1)'
+
+          code=$(curl --silent --output /tmp/booking-min.json --write-out '%{http_code}' -b /tmp/booking-b1-cookies.txt -X POST http://127.0.0.1:3000/api/rental-requests -H 'Content-Type: application/json' --data "{\"itemId\":\"$item_id\",\"pricingMode\":\"HOUR\",\"startsAt\":\"2030-09-11T10:00:00Z\",\"endsAt\":\"2030-09-11T11:00:00Z\"}")
+          test "$code" = "400"
+          node -e 'const d=require("/tmp/booking-min.json"); if(!d.fieldErrors.duration) process.exit(1)'
+
+          code=$(curl --silent --output /tmp/booking-blocked-create.json --write-out '%{http_code}' -b /tmp/booking-b1-cookies.txt -X POST http://127.0.0.1:3000/api/rental-requests -H 'Content-Type: application/json' --data "{\"itemId\":\"$item_id\",\"pricingMode\":\"HOUR\",\"startsAt\":\"2030-09-10T10:00:00Z\",\"endsAt\":\"2030-09-10T12:00:00Z\"}")
+          test "$code" = "409"
+          node -e 'const d=require("/tmp/booking-blocked-create.json"); if(d.code!=="AVAILABILITY_CONFLICT") process.exit(1)'
+
+      - name: Create overlapping requests with server pricing snapshots
+        run: |
+          item_id=$(cat /tmp/booking-item-id)
+          curl --fail --silent -b /tmp/booking-b1-cookies.txt -X POST http://127.0.0.1:3000/api/rental-requests \
+            -H 'Content-Type: application/json' \
+            --data "{\"itemId\":\"$item_id\",\"pricingMode\":\"HOUR\",\"startsAt\":\"2030-09-11T10:00:00Z\",\"endsAt\":\"2030-09-11T12:00:00Z\",\"unitRate\":1,\"rentalAmount\":1}" >/tmp/booking-request-one.json
+          curl --fail --silent -b /tmp/booking-b2-cookies.txt -X POST http://127.0.0.1:3000/api/rental-requests \
+            -H 'Content-Type: application/json' \
+            --data "{\"itemId\":\"$item_id\",\"pricingMode\":\"HOUR\",\"startsAt\":\"2030-09-11T10:30:00Z\",\"endsAt\":\"2030-09-11T12:30:00Z\"}" >/tmp/booking-request-two.json
+          node - <<'NODE'
+          const fs=require('fs');
+          const one=require('/tmp/booking-request-one.json');
+          const two=require('/tmp/booking-request-two.json');
+          if(!one.ok || one.request.status!=='REQUESTED' || one.request.unitRate!=='80.00' || one.request.rentalAmount!=='160.00' || one.request.depositAmount!=='3000.00' || one.request.isUrgent) process.exit(1);
+          if(!two.ok || two.request.status!=='REQUESTED') process.exit(1);
+          fs.writeFileSync('/tmp/booking-request-one-id',one.request.id);
+          fs.writeFileSync('/tmp/booking-request-two-id',two.request.id);
+          NODE
+
+      - name: Request lists are participant scoped
+        run: |
+          curl --fail --silent -b /tmp/booking-b1-cookies.txt http://127.0.0.1:3000/api/rental-requests >/tmp/booking-b1-list.json
+          node -e 'const d=require("/tmp/booking-b1-list.json"); if(!d.ok || d.incoming.length!==0 || d.outgoing.length!==1) process.exit(1)'
+          curl --fail --silent -b /tmp/booking-owner-cookies.txt http://127.0.0.1:3000/api/rental-requests >/tmp/booking-owner-list.json
+          node -e 'const d=require("/tmp/booking-owner-list.json"); if(!d.ok || d.incoming.length!==2 || d.outgoing.length!==0) process.exit(1)'
+
+      - name: Only owner can decide and accepted request locks period
+        run: |
+          one=$(cat /tmp/booking-request-one-id)
+          two=$(cat /tmp/booking-request-two-id)
+          code=$(curl --silent --output /tmp/booking-borrower-decision.json --write-out '%{http_code}' -b /tmp/booking-b1-cookies.txt -X POST "http://127.0.0.1:3000/api/rental-requests/$one/decision" -H 'Content-Type: application/json' --data '{"decision":"ACCEPT"}')
+          test "$code" = "403"
+
+          curl --fail --silent -b /tmp/booking-owner-cookies.txt -X POST "http://127.0.0.1:3000/api/rental-requests/$one/decision" -H 'Content-Type: application/json' --data '{"decision":"ACCEPT"}' >/tmp/booking-accepted.json
+          node -e 'const d=require("/tmp/booking-accepted.json"); if(!d.ok || d.request.status!=="WAITING_PAYMENT" || !d.request.acceptedAt) process.exit(1)'
+
+          code=$(curl --silent --output /tmp/booking-conflict-accept.json --write-out '%{http_code}' -b /tmp/booking-owner-cookies.txt -X POST "http://127.0.0.1:3000/api/rental-requests/$two/decision" -H 'Content-Type: application/json' --data '{"decision":"ACCEPT"}')
+          test "$code" = "409"
+          node -e 'const d=require("/tmp/booking-conflict-accept.json"); if(d.code!=="AVAILABILITY_CONFLICT") process.exit(1)'
+
+          item_id=$(cat /tmp/booking-item-id)
+          curl --fail --silent "http://127.0.0.1:3000/api/rental-items/$item_id/availability?from=2030-09-11T10%3A00%3A00Z&to=2030-09-11T12%3A00%3A00Z" >/tmp/booking-accepted-availability.json
+          node -e 'const d=require("/tmp/booking-accepted-availability.json"); if(d.availability.available || !d.availability.conflicts.some(x=>x.kind==="BOOKING")) process.exit(1)'
+
+      - name: Owner can reject request
+        run: |
+          item_id=$(cat /tmp/booking-item-id)
+          curl --fail --silent -b /tmp/booking-b1-cookies.txt -X POST http://127.0.0.1:3000/api/rental-requests -H 'Content-Type: application/json' --data "{\"itemId\":\"$item_id\",\"pricingMode\":\"DAY\",\"startsAt\":\"2030-09-15T10:00:00Z\",\"endsAt\":\"2030-09-17T10:00:00Z\"}" >/tmp/booking-daily.json
+          node -e 'const d=require("/tmp/booking-daily.json"); if(d.request.unitRate!=="650.00" || d.request.durationUnits!=="2.00" || d.request.rentalAmount!=="1300.00") process.exit(1); require("fs").writeFileSync("/tmp/booking-daily-id",d.request.id)'
+          request_id=$(cat /tmp/booking-daily-id)
+          curl --fail --silent -b /tmp/booking-owner-cookies.txt -X POST "http://127.0.0.1:3000/api/rental-requests/$request_id/decision" -H 'Content-Type: application/json' --data '{"decision":"REJECT"}' >/tmp/booking-rejected.json
+          node -e 'const d=require("/tmp/booking-rejected.json"); if(d.request.status!=="REJECTED" || !d.request.rejectedAt) process.exit(1)'
+
+      - name: Concurrent owner accepts allow exactly one winner
+        run: |
+          item_id=$(cat /tmp/booking-item-id)
+          curl --fail --silent -b /tmp/booking-b1-cookies.txt -X POST http://127.0.0.1:3000/api/rental-requests -H 'Content-Type: application/json' --data "{\"itemId\":\"$item_id\",\"pricingMode\":\"HOUR\",\"startsAt\":\"2030-09-20T10:00:00Z\",\"endsAt\":\"2030-09-20T12:00:00Z\"}" >/tmp/booking-race-one.json
+          curl --fail --silent -b /tmp/booking-b2-cookies.txt -X POST http://127.0.0.1:3000/api/rental-requests -H 'Content-Type: application/json' --data "{\"itemId\":\"$item_id\",\"pricingMode\":\"HOUR\",\"startsAt\":\"2030-09-20T10:30:00Z\",\"endsAt\":\"2030-09-20T12:30:00Z\"}" >/tmp/booking-race-two.json
+          race_one=$(node -e 'process.stdout.write(require("/tmp/booking-race-one.json").request.id)')
+          race_two=$(node -e 'process.stdout.write(require("/tmp/booking-race-two.json").request.id)')
+
+          (curl --silent --output /tmp/booking-race-one-response.json --write-out '%{http_code}' -b /tmp/booking-owner-cookies.txt -X POST "http://127.0.0.1:3000/api/rental-requests/$race_one/decision" -H 'Content-Type: application/json' --data '{"decision":"ACCEPT"}' >/tmp/booking-race-one-code) &
+          pid_one=$!
+          (curl --silent --output /tmp/booking-race-two-response.json --write-out '%{http_code}' -b /tmp/booking-owner-cookies.txt -X POST "http://127.0.0.1:3000/api/rental-requests/$race_two/decision" -H 'Content-Type: application/json' --data '{"decision":"ACCEPT"}' >/tmp/booking-race-two-code) &
+          pid_two=$!
+          wait "$pid_one"
+          wait "$pid_two"
+          codes=$(printf '%s\n%s\n' "$(cat /tmp/booking-race-one-code)" "$(cat /tmp/booking-race-two-code)" | sort | tr '\n' ' ')
+          test "$codes" = "200 409 "
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM rental_requests WHERE id IN ('$race_one','$race_two') AND status='WAITING_PAYMENT'")" = "1"
+
+      - name: Dashboard renders PostgreSQL requests
+        run: |
+          curl --fail --silent -b /tmp/booking-owner-cookies.txt http://127.0.0.1:3000/dashboard >/tmp/booking-owner-dashboard.html
+          grep -q 'Booking Test Camera' /tmp/booking-owner-dashboard.html
+          grep -q 'คำขอที่ฉันส่ง' /tmp/booking-owner-dashboard.html
+          curl --fail --silent -b /tmp/booking-b1-cookies.txt http://127.0.0.1:3000/dashboard >/tmp/booking-borrower-dashboard.html
+          grep -q 'Booking Test Camera' /tmp/booking-borrower-dashboard.html
+
+      - name: Show Next.js log on failure
+        if: failure()
+        run: cat /tmp/booking-next.log || true
