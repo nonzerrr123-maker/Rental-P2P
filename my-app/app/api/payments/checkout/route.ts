@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { authorizationErrorResponse, requireVerifiedUser } from "@/lib/auth/authorization";
+import { startOmiseCheckout } from "@/lib/payments/omise-checkout";
+import { getPaymentProviderState } from "@/lib/payments/registry";
 import { getCheckoutForUser, PaymentError, startCheckout } from "@/lib/payments/service";
 
 function paymentErrorResponse(error: unknown): NextResponse | null {
@@ -35,7 +37,11 @@ export async function POST(request: Request) {
     const data = body && typeof body === "object" ? body as Record<string, unknown> : {};
     const rentalRequestId = data.rentalRequestId;
     const origin = new URL(request.url).origin;
-    const checkout = await startCheckout(user.id, rentalRequestId, `${origin}/checkout/${String(rentalRequestId ?? "")}`);
+    const returnUrl = `${origin}/checkout/${String(rentalRequestId ?? "")}`;
+    const provider = getPaymentProviderState();
+    const checkout = provider.mode === "OMISE"
+      ? await startOmiseCheckout(user.id, rentalRequestId, returnUrl)
+      : await startCheckout(user.id, rentalRequestId, returnUrl);
     return NextResponse.json({ ok: true, checkout });
   } catch (error) {
     const authResponse = authorizationErrorResponse(error);
