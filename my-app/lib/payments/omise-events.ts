@@ -13,6 +13,7 @@ type PaymentRow = QueryResultRow & {
   currency: string;
   status: string;
   provider_reference: string | null;
+  metadata: Record<string, unknown> | null;
 };
 
 type RentalRow = QueryResultRow & {
@@ -38,13 +39,27 @@ export type OmiseEventOutcome = {
   reason?: string;
 };
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 function toMinor(amount: string): number {
   return Math.round(Number(amount) * 100);
 }
 
+function allocationIds(payment: PaymentRow): string[] {
+  const raw = payment.metadata?.providerAllocationPaymentIds;
+  if (!Array.isArray(raw)) return [payment.id];
+  const ids = raw.filter((value): value is string => typeof value === "string" && UUID_PATTERN.test(value));
+  return ids.length > 0 && ids.includes(payment.id) ? [...new Set(ids)] : [payment.id];
+}
+
+function expectedChargeAmountMinor(payment: PaymentRow): number {
+  const bundled = payment.metadata?.providerChargeAmountMinor;
+  return typeof bundled === "number" && Number.isInteger(bundled) && bundled > 0 ? bundled : toMinor(payment.amount);
+}
+
 async function lockPaymentByCharge(client: PoolClient, chargeId: string): Promise<PaymentRow | null> {
   const result = await client.query<PaymentRow>(
-    `SELECT id, rental_request_id, payer_id, type, amount, currency, status, provider_reference
+    `SELECT id, rental_request_id, payer_id, type, amount, currency, status, provider_reference, metadata
      FROM payments
      WHERE provider = 'OMISE' AND provider_reference = $1
      LIMIT 1
@@ -52,6 +67,20 @@ async function lockPaymentByCharge(client: PoolClient, chargeId: string): Promis
     [chargeId],
   );
   return result.rows[0] ?? null;
+}
+
+async function loadAllocations(client: PoolClient, anchor: PaymentRow): Promise<PaymentRow[]> {
+  const ids = allocationIds(anchor);
+  const result = await client.query<PaymentRow>(
+    `SELECT id, rental_request_id, payer_id, type, amount, currency, status, provider_reference, metadata
+     FROM payments
+     WHERE rental_request_id = $1 AND provider = 'OMISE' AND id = ANY($2::uuid[])
+     ORDER BY created_at ASC
+     FOR UPDATE`,
+    [anchor.rental_request_id, ids],
+  );
+  if (result.rows.length !== ids.length) throw new Error("Omise checkout allocation set is incomplete");
+  return result.rows;
 }
 
 async function lockRental(client: PoolClient, rentalRequestId: string): Promise<RentalRow | null> {
@@ -151,61 +180,65 @@ async function finalizeRentalIfPaid(client: PoolClient, rental: RentalRow): Prom
   return rental.status;
 }
 
-async function markSucceeded(client: PoolClient, payment: PaymentRow, rental: RentalRow): Promise<string> {
-  if (payment.status !== "SUCCEEDED") {
-    await client.query(
-      `UPDATE payments
-       SET status = 'SUCCEEDED', succeeded_at = COALESCE(succeeded_at, now()), failed_at = NULL, updated_at = now()
-       WHERE id = $1 AND status IN ('PENDING', 'REQUIRES_ACTION', 'FAILED')`,
-      [payment.id],
-    );
-    payment.status = "SUCCEEDED";
-  }
-  if (payment.type === "DEPOSIT") {
-    await client.query(
-      `UPDATE deposits
-       SET status = 'HELD', held_at = COALESCE(held_at, now()), updated_at = now()
-       WHERE rental_request_id = $1 AND payment_id = $2 AND status IN ('PENDING', 'HELD')`,
-      [rental.id, payment.id],
-    );
+async function markSucceeded(client: PoolClient, anchor: PaymentRow, rental: RentalRow): Promise<string> {
+  const allocations = await loadAllocations(client, anchor);
+  for (const payment of allocations) {
+    if (payment.status !== "SUCCEEDED") {
+      await client.query(
+        `UPDATE payments
+         SET status = 'SUCCEEDED', succeeded_at = COALESCE(succeeded_at, now()), failed_at = NULL, updated_at = now()
+         WHERE id = $1 AND status IN ('PENDING', 'REQUIRES_ACTION', 'FAILED')`,
+        [payment.id],
+      );
+      payment.status = "SUCCEEDED";
+    }
+    if (payment.type === "DEPOSIT") {
+      await client.query(
+        `UPDATE deposits
+         SET status = 'HELD', held_at = COALESCE(held_at, now()), updated_at = now()
+         WHERE rental_request_id = $1 AND payment_id = $2 AND status IN ('PENDING', 'HELD')`,
+        [rental.id, payment.id],
+      );
+      await createNotification(client, {
+        userId: rental.borrower_id,
+        type: "DEPOSIT_HELD",
+        title: "เงินประกันถูกพักไว้แล้ว",
+        body: `Omise ยืนยันเงินประกัน ฿${payment.amount}; ระบบจะถือยอดไว้จนถึงขั้นคืนของ/ระงับข้อพิพาท`,
+        relatedEntityType: "PAYMENT",
+        relatedEntityId: payment.id,
+        idempotent: true,
+      });
+    }
     await createNotification(client, {
       userId: rental.borrower_id,
-      type: "DEPOSIT_HELD",
-      title: "เงินประกันถูกพักไว้แล้ว",
-      body: `Omise ยืนยันเงินประกัน ฿${payment.amount}; ระบบจะถือยอดไว้จนถึงขั้นคืนของ/ระงับข้อพิพาท`,
+      type: "PAYMENT_SUCCEEDED",
+      title: "Omise ยืนยันการชำระเงินแล้ว",
+      body: `รับชำระ ${payment.type} ฿${payment.amount} แล้ว`,
       relatedEntityType: "PAYMENT",
       relatedEntityId: payment.id,
       idempotent: true,
     });
   }
-  await createNotification(client, {
-    userId: rental.borrower_id,
-    type: "PAYMENT_SUCCEEDED",
-    title: "Omise ยืนยันการชำระเงินแล้ว",
-    body: `รับชำระ ${payment.type} ฿${payment.amount} แล้ว`,
-    relatedEntityType: "PAYMENT",
-    relatedEntityId: payment.id,
-    idempotent: true,
-  });
   return finalizeRentalIfPaid(client, rental);
 }
 
-async function markUnsuccessful(client: PoolClient, payment: PaymentRow, rental: RentalRow, charge: OmiseCharge): Promise<void> {
+async function markUnsuccessful(client: PoolClient, anchor: PaymentRow, rental: RentalRow, charge: OmiseCharge): Promise<void> {
   const status = charge.status === "expired" ? "CANCELLED" : "FAILED";
+  const ids = allocationIds(anchor);
   await client.query(
     `UPDATE payments
      SET status = $2::payment_status, failed_at = now(), updated_at = now(),
          metadata = metadata || $3::jsonb
-     WHERE id = $1 AND status <> 'SUCCEEDED'`,
-    [payment.id, status, JSON.stringify({ providerObservedStatus: charge.status })],
+     WHERE rental_request_id = $1 AND id = ANY($4::uuid[]) AND status <> 'SUCCEEDED'`,
+    [anchor.rental_request_id, status, JSON.stringify({ providerObservedStatus: charge.status }), ids],
   );
   await createNotification(client, {
     userId: rental.borrower_id,
     type: "PAYMENT_FAILED",
     title: "การชำระเงินยังไม่สำเร็จ",
-    body: `${payment.type} ฿${payment.amount} มีสถานะ ${charge.status} จาก Omise`,
+    body: `PromptPay checkout มีสถานะ ${charge.status} จาก Omise`,
     relatedEntityType: "PAYMENT",
-    relatedEntityId: payment.id,
+    relatedEntityId: anchor.id,
     idempotent: true,
   });
 }
@@ -245,14 +278,14 @@ export async function processOmiseWebhook(rawBody: string): Promise<OmiseEventOu
       await finishEvent("UNKNOWN_PAYMENT_REFERENCE");
       return { outcome: "IGNORED", eventId: event.id, paymentId: null, reason: "Unknown Omise charge" };
     }
-    if (charge.amount !== toMinor(payment.amount) || charge.currency !== payment.currency.toUpperCase()) {
+    if (charge.amount !== expectedChargeAmountMinor(payment) || charge.currency !== payment.currency.toUpperCase()) {
       await finishEvent("AMOUNT_OR_CURRENCY_MISMATCH");
       return {
         outcome: "IGNORED",
         eventId: event.id,
         paymentId: payment.id,
         paymentStatus: payment.status,
-        reason: "Charge amount or currency did not match the server payment snapshot",
+        reason: "Charge amount or currency did not match the server checkout snapshot",
       };
     }
 
