@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 type Listing = {
   id: string;
@@ -10,26 +10,10 @@ type Listing = {
   urgentReservationFeeRate: string;
 };
 
-export default function UrgentListingManager() {
-  const [items, setItems] = useState<Listing[]>([]);
-  const [loading, setLoading] = useState(true);
+export default function UrgentListingManager({ initialItems }: { initialItems: Listing[] }) {
+  const [items, setItems] = useState(initialItems);
   const [busyId, setBusyId] = useState("");
   const [message, setMessage] = useState("");
-
-  const load = async () => {
-    const response = await fetch("/api/rental-items/mine", { cache: "no-store" });
-    const payload = await response.json();
-    if (!response.ok || !payload.ok) throw new Error(payload.message || "โหลดรายการไม่สำเร็จ");
-    setItems(payload.items);
-  };
-
-  useEffect(() => {
-    let active = true;
-    void load()
-      .catch((error: unknown) => active && setMessage(error instanceof Error ? error.message : "โหลดรายการไม่สำเร็จ"))
-      .finally(() => active && setLoading(false));
-    return () => { active = false; };
-  }, []);
 
   const toggle = async (item: Listing) => {
     setBusyId(item.id);
@@ -63,27 +47,25 @@ export default function UrgentListingManager() {
         </div>
 
         {message && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{message}</p>}
-        {loading ? <p className="mt-5 text-sm text-neutral-500">กำลังโหลดรายการ...</p> : (
-          <div className="mt-5 grid gap-3 md:grid-cols-2">
-            {items.map((item) => (
-              <article key={item.id} className="flex items-center justify-between gap-4 rounded-xl border bg-white p-4">
-                <div className="min-w-0">
-                  <p className="truncate font-black">{item.title}</p>
-                  <p className="mt-1 text-xs text-neutral-500">{item.status} · ค่าจอง {Number(item.urgentReservationFeeRate) * 100}%</p>
-                </div>
-                <button
-                  type="button"
-                  disabled={busyId === item.id || item.status !== "ACTIVE"}
-                  onClick={() => void toggle(item)}
-                  className={`shrink-0 rounded-full px-4 py-2 text-xs font-black disabled:opacity-40 ${item.urgentEnabled ? "bg-neutral-950 text-white" : "border bg-white"}`}
-                >
-                  {busyId === item.id ? "กำลังบันทึก..." : item.urgentEnabled ? "⚡ เปิดอยู่" : "ปิดอยู่"}
-                </button>
-              </article>
-            ))}
-            {!items.length && <p className="text-sm text-neutral-500">ยังไม่มีประกาศสำหรับตั้งค่า</p>}
-          </div>
-        )}
+        <div className="mt-5 grid gap-3 md:grid-cols-2">
+          {items.map((item) => (
+            <article key={item.id} className="flex items-center justify-between gap-4 rounded-xl border bg-white p-4">
+              <div className="min-w-0">
+                <p className="truncate font-black">{item.title}</p>
+                <p className="mt-1 text-xs text-neutral-500">{item.status} · ค่าจอง {Number(item.urgentReservationFeeRate) * 100}%</p>
+              </div>
+              <button
+                type="button"
+                disabled={busyId === item.id || item.status !== "ACTIVE"}
+                onClick={() => void toggle(item)}
+                className={`shrink-0 rounded-full px-4 py-2 text-xs font-black disabled:opacity-40 ${item.urgentEnabled ? "bg-neutral-950 text-white" : "border bg-white"}`}
+              >
+                {busyId === item.id ? "กำลังบันทึก..." : item.urgentEnabled ? "⚡ เปิดอยู่" : "ปิดอยู่"}
+              </button>
+            </article>
+          ))}
+          {!items.length && <p className="text-sm text-neutral-500">ยังไม่มีประกาศสำหรับตั้งค่า</p>}
+        </div>
       </div>
     </section>
   );
