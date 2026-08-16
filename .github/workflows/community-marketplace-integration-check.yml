@@ -145,7 +145,6 @@ jobs:
 
       - name: Nearby community search is server-side and bounded
         run: |
-          window=$(cat /tmp/community-window.json)
           node - <<'NODE'
           const fs=require('fs'),w=require('/tmp/community-window.json');
           fs.writeFileSync('/tmp/community-far.json',JSON.stringify({title:'Far Camera Request',description:'คำขอไกลสำหรับทดสอบรัศมี',category:'กล้อง',province:'ฉะเชิงเทรา',district:'เมืองฉะเชิงเทรา',latitude:13.80,longitude:101.10,neededStartsAt:w.start,neededEndsAt:w.end,targetPrice:800,isUrgent:false}));
@@ -220,10 +219,13 @@ jobs:
       - name: Accepted community rental is compatible with checkout
         run: |
           rental_id=$(cat /tmp/community-rental-id)
-          curl --fail --silent -b /tmp/requester.cookies http://127.0.0.1:3000/api/payments/rental/$rental_id >/tmp/community-payment-read.json
-          node -e "const d=require('/tmp/community-payment-read.json'); if(!d.ok)process.exit(1)"
+          curl --fail --silent -b /tmp/requester.cookies "http://127.0.0.1:3000/api/payments/checkout?rentalRequestId=$rental_id" >/tmp/community-payment-read.json
+          node - <<'NODE'
+          const d=require('/tmp/community-payment-read.json');
+          if(!d.ok||d.checkout.rentalRequestId!==require('fs').readFileSync('/tmp/community-rental-id','utf8').trim()) process.exit(1);
+          NODE
           curl --fail --silent -b /tmp/requester.cookies http://127.0.0.1:3000/checkout/$rental_id >/tmp/community-checkout.html
-          grep -q 'Projector' /tmp/community-checkout.html
+          grep -q 'SECURE CHECKOUT' /tmp/community-checkout.html
 
       - name: Availability conflict blocks an offer
         run: |
