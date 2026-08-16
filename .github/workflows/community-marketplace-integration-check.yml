@@ -1,0 +1,299 @@
+name: Community marketplace integration check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/**"
+      - ".github/workflows/community-marketplace-integration-check.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "my-app/**"
+      - ".github/workflows/community-marketplace-integration-check.yml"
+
+jobs:
+  validate-community-marketplace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: p2p_rental
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d p2p_rental"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/p2p_rental
+      DATABASE_POOL_MAX: 6
+      KYC_PROVIDER: manual
+      NEXT_TELEMETRY_DISABLED: 1
+
+    defaults:
+      run:
+        working-directory: my-app
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply PostgreSQL schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+
+      - name: Lint task19 scope
+        run: >-
+          npx eslint
+          lib/community/service.ts
+          app/api/community-requests/route.ts
+          app/api/community-requests/[id]/route.ts
+          app/api/community-requests/[id]/offers/route.ts
+          app/api/community-offers/[id]/route.ts
+          app/community/page.tsx
+          app/community/community-filters.tsx
+          app/community/new/page.tsx
+          app/community/new/community-request-form.tsx
+          app/community/[id]/page.tsx
+          app/community/[id]/community-actions.tsx
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start application
+        run: |
+          nohup npm run start -- -p 3000 > /tmp/community-next.log 2>&1 &
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/api/health/db >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/community-next.log
+          exit 1
+
+      - name: Guest and unverified users cannot create community requests
+        run: |
+          code=$(curl --silent --output /tmp/community-guest.json --write-out '%{http_code}' -X POST http://127.0.0.1:3000/api/community-requests -H 'Content-Type: application/json' --data '{}')
+          test "$code" = "401"
+          node -e "const d=require('/tmp/community-guest.json'); if(d.code!=='UNAUTHENTICATED') process.exit(1)"
+
+          for spec in \
+            'Requester|requester.community@example.com|request-pass-123|/tmp/requester.cookies' \
+            'Lender One|lender1.community@example.com|lender-one-pass-123|/tmp/lender1.cookies' \
+            'Lender Two|lender2.community@example.com|lender-two-pass-123|/tmp/lender2.cookies' \
+            'Unverified|unverified.community@example.com|unverified-pass-123|/tmp/unverified.cookies'; do
+            IFS='|' read -r name email pass cookies <<< "$spec"
+            curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register -H 'Content-Type: application/json' --data "{\"displayName\":\"$name\",\"email\":\"$email\",\"password\":\"$pass\"}" >/dev/null
+            curl --fail --silent -c "$cookies" -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data "{\"email\":\"$email\",\"password\":\"$pass\"}" >/dev/null
+          done
+
+          code=$(curl --silent --output /tmp/community-unverified.json --write-out '%{http_code}' -b /tmp/unverified.cookies -X POST http://127.0.0.1:3000/api/community-requests -H 'Content-Type: application/json' --data '{}')
+          test "$code" = "403"
+          node -e "const d=require('/tmp/community-unverified.json'); if(d.code!=='VERIFICATION_REQUIRED') process.exit(1)"
+
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE users SET verification_status='VERIFIED' WHERE email IN ('requester.community@example.com','lender1.community@example.com','lender2.community@example.com');"
+          psql "$DATABASE_URL" -Atc "SELECT id FROM users WHERE email='requester.community@example.com'" >/tmp/requester-id
+          psql "$DATABASE_URL" -Atc "SELECT id FROM users WHERE email='lender1.community@example.com'" >/tmp/lender1-id
+          psql "$DATABASE_URL" -Atc "SELECT id FROM users WHERE email='lender2.community@example.com'" >/tmp/lender2-id
+
+      - name: Create request with server-owned requester and privacy-safe public response
+        run: |
+          node - <<'NODE'
+          const fs=require('fs');
+          const start=new Date(Date.now()+24*60*60*1000);
+          const end=new Date(start.getTime()+2*60*60*1000);
+          fs.writeFileSync('/tmp/community-window.json',JSON.stringify({start:start.toISOString(),end:end.toISOString()}));
+          fs.writeFileSync('/tmp/community-create.json',JSON.stringify({
+            requesterId:'00000000-0000-4000-8000-000000000099',
+            title:'Projector Full HD Tomorrow',description:'ต้องการโปรเจคเตอร์สำหรับพรีเซนต์งานสองชั่วโมง',category:'อิเล็กทรอนิกส์',
+            province:'ชลบุรี',district:'เมืองชลบุรี',subdistrict:'แสนสุข',latitude:13.2858,longitude:100.9242,
+            neededStartsAt:start.toISOString(),neededEndsAt:end.toISOString(),targetPrice:500,isUrgent:true
+          }));
+          NODE
+          curl --fail --silent -b /tmp/requester.cookies -X POST http://127.0.0.1:3000/api/community-requests -H 'Content-Type: application/json' --data @/tmp/community-create.json >/tmp/community-created.json
+          node - <<'NODE'
+          const fs=require('fs'),d=require('/tmp/community-created.json');
+          if(!d.ok||d.request.title!=='Projector Full HD Tomorrow'||!d.request.isUrgent) process.exit(1);
+          if('requesterId' in d.request||'latitude' in d.request||'longitude' in d.request) process.exit(1);
+          fs.writeFileSync('/tmp/community-request-id',d.request.id);
+          NODE
+          request_id=$(cat /tmp/community-request-id)
+          requester_id=$(cat /tmp/requester-id)
+          test "$(psql "$DATABASE_URL" -Atc "SELECT requester_id FROM community_requests WHERE id='$request_id'")" = "$requester_id"
+          curl --fail --silent http://127.0.0.1:3000/api/community-requests/$request_id >/tmp/community-public-detail.json
+          node - <<'NODE'
+          const d=require('/tmp/community-public-detail.json');
+          const text=JSON.stringify(d).toLowerCase();
+          for(const forbidden of ['requesterid','latitude','longitude','email','phone','password']) if(text.includes(forbidden)) process.exit(1);
+          NODE
+
+      - name: Nearby community search is server-side and bounded
+        run: |
+          node - <<'NODE'
+          const fs=require('fs'),w=require('/tmp/community-window.json');
+          fs.writeFileSync('/tmp/community-far.json',JSON.stringify({title:'Far Camera Request',description:'คำขอไกลสำหรับทดสอบรัศมี',category:'กล้อง',province:'ฉะเชิงเทรา',district:'เมืองฉะเชิงเทรา',latitude:13.80,longitude:101.10,neededStartsAt:w.start,neededEndsAt:w.end,targetPrice:800,isUrgent:false}));
+          NODE
+          curl --fail --silent -b /tmp/requester.cookies -X POST http://127.0.0.1:3000/api/community-requests -H 'Content-Type: application/json' --data @/tmp/community-far.json >/dev/null
+          curl --fail --silent 'http://127.0.0.1:3000/api/community-requests?lat=13.2858&lng=100.9242&radiusKm=5&sort=nearest' >/tmp/community-nearby.json
+          node - <<'NODE'
+          const d=require('/tmp/community-nearby.json');
+          if(!d.ok||d.total!==1||d.items[0].title!=='Projector Full HD Tomorrow') process.exit(1);
+          if(typeof d.items[0].distanceKm!=='number'||d.items[0].distanceKm>0.1) process.exit(1);
+          const text=JSON.stringify(d); if(text.includes('latitude')||text.includes('longitude')) process.exit(1);
+          NODE
+          code=$(curl --silent --output /tmp/community-radius-bad.json --write-out '%{http_code}' 'http://127.0.0.1:3000/api/community-requests?lat=13.2&lng=100.9&radiusKm=51')
+          test "$code" = "400"
+          code=$(curl --silent --output /tmp/community-sql-bad.json --write-out '%{http_code}' --get http://127.0.0.1:3000/api/community-requests --data-urlencode "sort=newest;DROP TABLE users")
+          test "$code" = "400"
+          test "$(psql "$DATABASE_URL" -Atc 'SELECT count(*) FROM users')" = "4"
+
+      - name: Create lender listings for offer tests
+        run: |
+          curl --fail --silent -b /tmp/lender1.cookies -X POST http://127.0.0.1:3000/api/rental-items -H 'Content-Type: application/json' --data '{"title":"Epson Projector L1","category":"อิเล็กทรอนิกส์","description":"โปรเจคเตอร์สภาพดีสำหรับข้อเสนอคอมมู","condition":"GOOD","hourlyRate":120,"dailyRate":700,"minimumHours":1,"depositAmount":1000,"province":"ชลบุรี","district":"เมืองชลบุรี"}' >/tmp/lender1-item.json
+          node -e "const fs=require('fs'),d=require('/tmp/lender1-item.json'); if(!d.ok)process.exit(1); fs.writeFileSync('/tmp/lender1-item-id',d.item.id)"
+          curl --fail --silent -b /tmp/lender2.cookies -X POST http://127.0.0.1:3000/api/rental-items -H 'Content-Type: application/json' --data '{"title":"BenQ Projector L2","category":"อิเล็กทรอนิกส์","description":"โปรเจคเตอร์อีกตัวสำหรับทดสอบการแข่งขัน","condition":"GOOD","hourlyRate":100,"dailyRate":650,"minimumHours":1,"depositAmount":900,"province":"ชลบุรี","district":"เมืองชลบุรี"}' >/tmp/lender2-item.json
+          node -e "const fs=require('fs'),d=require('/tmp/lender2-item.json'); if(!d.ok)process.exit(1); fs.writeFileSync('/tmp/lender2-item-id',d.item.id)"
+
+      - name: Self offer foreign item duplicate and forged lender are blocked
+        run: |
+          request_id=$(cat /tmp/community-request-id)
+          item1=$(cat /tmp/lender1-item-id)
+          item2=$(cat /tmp/lender2-item-id)
+          code=$(curl --silent --output /tmp/community-self-offer.json --write-out '%{http_code}' -b /tmp/requester.cookies -X POST http://127.0.0.1:3000/api/community-requests/$request_id/offers -H 'Content-Type: application/json' --data '{"message":"เสนอให้ตัวเอง"}')
+          test "$code" = "409"
+
+          curl --fail --silent -b /tmp/lender1.cookies -X POST http://127.0.0.1:3000/api/community-requests/$request_id/offers -H 'Content-Type: application/json' --data "{\"lenderId\":\"$(cat /tmp/lender2-id)\",\"rentalItemId\":\"$item1\",\"pricingMode\":\"HOUR\",\"offeredRate\":110,\"message\":\"พร้อมส่งใกล้บางแสน\"}" >/tmp/community-offer1.json
+          node - <<'NODE'
+          const fs=require('fs'),d=require('/tmp/community-offer1.json');
+          if(!d.ok||d.offer.offeredRate!=='110.00') process.exit(1);
+          if(d.offer.lenderId!==fs.readFileSync('/tmp/lender1-id','utf8').trim()) process.exit(1);
+          fs.writeFileSync('/tmp/community-offer1-id',d.offer.id);
+          NODE
+          code=$(curl --silent --output /tmp/community-duplicate-offer.json --write-out '%{http_code}' -b /tmp/lender1.cookies -X POST http://127.0.0.1:3000/api/community-requests/$request_id/offers -H 'Content-Type: application/json' --data '{"message":"duplicate"}')
+          test "$code" = "409"
+
+          offer1=$(cat /tmp/community-offer1-id)
+          code=$(curl --silent --output /tmp/community-foreign-item.json --write-out '%{http_code}' -b /tmp/lender1.cookies -X PATCH http://127.0.0.1:3000/api/community-offers/$offer1 -H 'Content-Type: application/json' --data "{\"action\":\"UPDATE\",\"rentalItemId\":\"$item2\",\"pricingMode\":\"HOUR\",\"offeredRate\":100,\"message\":\"forge foreign item\"}")
+          test "$code" = "403"
+
+          curl --fail --silent -b /tmp/lender2.cookies -X POST http://127.0.0.1:3000/api/community-requests/$request_id/offers -H 'Content-Type: application/json' --data "{\"rentalItemId\":\"$item2\",\"pricingMode\":\"HOUR\",\"offeredRate\":90,\"message\":\"อีกข้อเสนอหนึ่ง\"}" >/tmp/community-offer2.json
+          node -e "const fs=require('fs'),d=require('/tmp/community-offer2.json'); if(!d.ok)process.exit(1); fs.writeFileSync('/tmp/community-offer2-id',d.offer.id)"
+
+      - name: Stranger cannot accept and requester match creates authoritative rental
+        run: |
+          offer1=$(cat /tmp/community-offer1-id)
+          code=$(curl --silent --output /tmp/community-foreign-accept.json --write-out '%{http_code}' -b /tmp/lender2.cookies -X PATCH http://127.0.0.1:3000/api/community-offers/$offer1 -H 'Content-Type: application/json' --data '{"action":"ACCEPT"}')
+          test "$code" = "403"
+
+          curl --fail --silent -b /tmp/requester.cookies -X PATCH http://127.0.0.1:3000/api/community-offers/$offer1 -H 'Content-Type: application/json' --data '{"action":"ACCEPT","rentalAmount":1,"borrowerId":"00000000-0000-4000-8000-000000000099"}' >/tmp/community-accepted.json
+          node - <<'NODE'
+          const fs=require('fs'),d=require('/tmp/community-accepted.json');
+          if(!d.ok||d.offer.status!=='ACCEPTED'||d.offer.rentalRequestId!==d.offer.id) process.exit(1);
+          fs.writeFileSync('/tmp/community-rental-id',d.offer.rentalRequestId);
+          NODE
+          request_id=$(cat /tmp/community-request-id)
+          offer2=$(cat /tmp/community-offer2-id)
+          rental_id=$(cat /tmp/community-rental-id)
+          test "$(psql "$DATABASE_URL" -Atc "SELECT status FROM community_requests WHERE id='$request_id'")" = "MATCHED"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT status FROM community_offers WHERE id='$offer2'")" = "REJECTED"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT status || '|' || unit_rate || '|' || rental_amount FROM rental_requests WHERE id='$rental_id'")" = "WAITING_PAYMENT|110.00|220.00"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM conversation_participants cp JOIN conversations c ON c.id=cp.conversation_id WHERE c.rental_request_id='$rental_id'")" = "2"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM notifications WHERE related_entity_id='$rental_id' AND type IN ('COMMUNITY_MATCHED','COMMUNITY_OFFER_ACCEPTED')")" = "2"
+
+      - name: Accepted community rental is compatible with checkout
+        run: |
+          rental_id=$(cat /tmp/community-rental-id)
+          curl --fail --silent -b /tmp/requester.cookies "http://127.0.0.1:3000/api/payments/checkout?rentalRequestId=$rental_id" >/tmp/community-payment-read.json
+          node - <<'NODE'
+          const d=require('/tmp/community-payment-read.json');
+          if(!d.ok||d.checkout.rentalRequestId!==require('fs').readFileSync('/tmp/community-rental-id','utf8').trim()) process.exit(1);
+          NODE
+          curl --fail --silent -b /tmp/requester.cookies http://127.0.0.1:3000/checkout/$rental_id >/tmp/community-checkout.html
+          grep -q 'SECURE CHECKOUT' /tmp/community-checkout.html
+
+      - name: Availability conflict blocks an offer
+        run: |
+          node - <<'NODE'
+          const fs=require('fs');
+          const start=new Date(Date.now()+48*60*60*1000),end=new Date(start.getTime()+2*60*60*1000);
+          fs.writeFileSync('/tmp/conflict-request.json',JSON.stringify({title:'Conflict Projector Request',description:'ใช้ทดสอบช่วงเวลาที่ถูก block',category:'อิเล็กทรอนิกส์',province:'ชลบุรี',neededStartsAt:start.toISOString(),neededEndsAt:end.toISOString(),targetPrice:300,isUrgent:false}));
+          fs.writeFileSync('/tmp/conflict-window.json',JSON.stringify({start:start.toISOString(),end:end.toISOString()}));
+          NODE
+          curl --fail --silent -b /tmp/requester.cookies -X POST http://127.0.0.1:3000/api/community-requests -H 'Content-Type: application/json' --data @/tmp/conflict-request.json >/tmp/conflict-created.json
+          node -e "const fs=require('fs'),d=require('/tmp/conflict-created.json'); fs.writeFileSync('/tmp/conflict-request-id',d.request.id)"
+          item1=$(cat /tmp/lender1-item-id)
+          start=$(node -p "require('/tmp/conflict-window.json').start")
+          end=$(node -p "require('/tmp/conflict-window.json').end")
+          lender1=$(cat /tmp/lender1-id)
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "INSERT INTO item_availability_blocks(item_id,starts_at,ends_at,reason,created_by) VALUES ('$item1','$start','$end','CI block','$lender1');"
+          conflict_request=$(cat /tmp/conflict-request-id)
+          code=$(curl --silent --output /tmp/conflict-offer.json --write-out '%{http_code}' -b /tmp/lender1.cookies -X POST http://127.0.0.1:3000/api/community-requests/$conflict_request/offers -H 'Content-Type: application/json' --data "{\"rentalItemId\":\"$item1\",\"pricingMode\":\"HOUR\",\"offeredRate\":100,\"message\":\"blocked\"}")
+          test "$code" = "409"
+          node -e "const d=require('/tmp/conflict-offer.json'); if(d.code!=='AVAILABILITY_CONFLICT')process.exit(1)"
+
+      - name: Concurrent accept chooses exactly one offer
+        run: |
+          node - <<'NODE'
+          const fs=require('fs');
+          const start=new Date(Date.now()+72*60*60*1000),end=new Date(start.getTime()+2*60*60*1000);
+          fs.writeFileSync('/tmp/race-request.json',JSON.stringify({title:'Race Match Request',description:'ทดสอบ concurrent accept สองข้อเสนอ',category:'อิเล็กทรอนิกส์',province:'ชลบุรี',neededStartsAt:start.toISOString(),neededEndsAt:end.toISOString(),targetPrice:400,isUrgent:false}));
+          NODE
+          curl --fail --silent -b /tmp/requester.cookies -X POST http://127.0.0.1:3000/api/community-requests -H 'Content-Type: application/json' --data @/tmp/race-request.json >/tmp/race-created.json
+          race_request=$(node -p "require('/tmp/race-created.json').request.id")
+          item1=$(cat /tmp/lender1-item-id); item2=$(cat /tmp/lender2-item-id)
+          curl --fail --silent -b /tmp/lender1.cookies -X POST http://127.0.0.1:3000/api/community-requests/$race_request/offers -H 'Content-Type: application/json' --data "{\"rentalItemId\":\"$item1\",\"pricingMode\":\"HOUR\",\"offeredRate\":115,\"message\":\"race1\"}" >/tmp/race-offer1.json
+          curl --fail --silent -b /tmp/lender2.cookies -X POST http://127.0.0.1:3000/api/community-requests/$race_request/offers -H 'Content-Type: application/json' --data "{\"rentalItemId\":\"$item2\",\"pricingMode\":\"HOUR\",\"offeredRate\":95,\"message\":\"race2\"}" >/tmp/race-offer2.json
+          race1=$(node -p "require('/tmp/race-offer1.json').offer.id"); race2=$(node -p "require('/tmp/race-offer2.json').offer.id")
+          (curl --silent --output /tmp/race-accept1.json --write-out '%{http_code}' -b /tmp/requester.cookies -X PATCH http://127.0.0.1:3000/api/community-offers/$race1 -H 'Content-Type: application/json' --data '{"action":"ACCEPT"}' >/tmp/race-code1) &
+          p1=$!
+          (curl --silent --output /tmp/race-accept2.json --write-out '%{http_code}' -b /tmp/requester.cookies -X PATCH http://127.0.0.1:3000/api/community-offers/$race2 -H 'Content-Type: application/json' --data '{"action":"ACCEPT"}' >/tmp/race-code2) &
+          p2=$!
+          wait $p1; wait $p2
+          code1=$(cat /tmp/race-code1); code2=$(cat /tmp/race-code2)
+          test "$code1" = "200" -o "$code2" = "200"
+          test "$code1" = "409" -o "$code2" = "409"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM community_offers WHERE community_request_id='$race_request' AND status='ACCEPTED'")" = "1"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM rental_requests WHERE id IN ('$race1','$race2')")" = "1"
+
+      - name: Expired requests reject new offers and close pending offers
+        run: |
+          node - <<'NODE'
+          const fs=require('fs');
+          const start=new Date(Date.now()+24*60*60*1000),end=new Date(start.getTime()+60*60*1000);
+          fs.writeFileSync('/tmp/expire-request.json',JSON.stringify({title:'Expired Request Test',description:'คำขอที่จะถูกทำให้หมดอายุในฐานข้อมูล',category:'เครื่องมือ',province:'ชลบุรี',neededStartsAt:start.toISOString(),neededEndsAt:end.toISOString(),targetPrice:100,isUrgent:false}));
+          NODE
+          curl --fail --silent -b /tmp/requester.cookies -X POST http://127.0.0.1:3000/api/community-requests -H 'Content-Type: application/json' --data @/tmp/expire-request.json >/tmp/expire-created.json
+          expire_id=$(node -p "require('/tmp/expire-created.json').request.id")
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE community_requests SET needed_starts_at=now()-interval '2 hours', needed_ends_at=now()-interval '1 hour' WHERE id='$expire_id';"
+          code=$(curl --silent --output /tmp/expired-offer.json --write-out '%{http_code}' -b /tmp/lender1.cookies -X POST http://127.0.0.1:3000/api/community-requests/$expire_id/offers -H 'Content-Type: application/json' --data '{"message":"too late"}')
+          test "$code" = "409"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT status FROM community_requests WHERE id='$expire_id'")" = "EXPIRED"
+
+      - name: Community pages render real data and no old mock source
+        run: |
+          request_id=$(cat /tmp/community-request-id)
+          curl --fail --silent http://127.0.0.1:3000/community >/tmp/community-board.html
+          grep -q 'คอมมูหาของ' /tmp/community-board.html
+          curl --fail --silent http://127.0.0.1:3000/community/$request_id >/tmp/community-detail.html
+          grep -q 'Projector Full HD Tomorrow' /tmp/community-detail.html
+          ! grep -q 'PlayStation 5' /tmp/community-board.html
+
+      - name: Show Next.js log on failure
+        if: failure()
+        run: cat /tmp/community-next.log || true
