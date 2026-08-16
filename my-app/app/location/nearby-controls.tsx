@@ -19,7 +19,7 @@ export default function NearbyControls({ initial, provinces }: { initial: Initia
   const [locating, setLocating] = useState(false);
   const [message, setMessage] = useState("");
 
-  const useCurrentLocation = (radiusKm: number) => {
+  const requestCurrentLocation = (radiusKm: number) => {
     if (!navigator.geolocation) {
       setMessage("เบราว์เซอร์นี้ไม่รองรับ Location — ใช้จังหวัด/อำเภอ/ตำบลด้านล่างแทนได้");
       return;
@@ -56,7 +56,7 @@ export default function NearbyControls({ initial, provinces }: { initial: Initia
               key={radius}
               type="button"
               disabled={locating}
-              onClick={() => useCurrentLocation(radius)}
+              onClick={() => requestCurrentLocation(radius)}
               className={`rounded-full border px-4 py-2 text-sm font-bold disabled:opacity-50 ${initial.radiusKm === radius ? "border-neutral-950 bg-neutral-950 text-white" : "hover:border-[#c9a227]"}`}
             >
               {locating ? "กำลังอ่านตำแหน่ง..." : `${radius} กม.`}
