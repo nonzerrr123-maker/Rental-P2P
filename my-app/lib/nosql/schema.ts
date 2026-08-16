@@ -1,5 +1,5 @@
 export type UserRole = "USER" | "ADMIN" | "SUPERADMIN";
-export type VerificationStatus = "PENDING" | "APPROVED" | "REJECTED";
+export type VerificationStatus = "UNVERIFIED" | "PENDING" | "VERIFIED" | "REJECTED";
 export type RentalStatus = "PENDING" | "ACCEPTED" | "WAITING_PAYMENT" | "PAID" | "WAITING_PICKUP" | "BORROWING" | "RETURN_PENDING" | "RETURNED" | "COMPLETED" | "REJECTED" | "CANCELLED" | "DISPUTED";
 export type PaymentStatus = "PENDING" | "PAID" | "REFUNDED" | "FAILED";
 
@@ -14,4 +14,5 @@ export interface Review { id: string; rentalId: string; reviewerId: string; revi
 export interface Dispute { id: string; rentalId: string; openedBy: string; reason: string; detail: string; status: "PENDING_REVIEW" | "RESOLVED"; resolvedBy?: string; resolvedAt?: string; createdAt: string; }
 export interface Notification { id: string; userId: string; type: string; title: string; body: string; read: boolean; relatedId?: string; createdAt: string; }
 
+// Legacy prototype types only. PostgreSQL is the canonical source of truth.
 export const collections = ["users", "verification_requests", "listings", "rentals", "payments", "conversations", "messages", "reviews", "disputes", "notifications"] as const;
