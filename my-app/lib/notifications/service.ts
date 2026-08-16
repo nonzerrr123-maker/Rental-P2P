@@ -1,6 +1,8 @@
 import type { PoolClient, QueryResultRow } from "pg";
 import { query } from "@/lib/db";
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 export type NotificationSummary = {
   id: string;
   type: string;
@@ -84,7 +86,8 @@ export async function listNotificationsForUser(
   userId: string,
   limit = 50,
 ): Promise<{ items: NotificationSummary[]; unreadCount: number }> {
-  const safeLimit = Math.min(Math.max(Math.trunc(limit), 1), 100);
+  const requestedLimit = Number.isFinite(limit) ? Math.trunc(limit) : 50;
+  const safeLimit = Math.min(Math.max(requestedLimit, 1), 100);
   const [itemsResult, unreadResult] = await Promise.all([
     query<NotificationRow>(
       `SELECT id, type, title, body, related_entity_type, related_entity_id, read_at, created_at
@@ -119,6 +122,7 @@ export async function getNotificationUnreadCount(userId: string): Promise<number
 }
 
 export async function markNotificationRead(userId: string, notificationId: string): Promise<boolean> {
+  if (!UUID_PATTERN.test(notificationId)) return false;
   const result = await query(
     `UPDATE notifications
      SET read_at = COALESCE(read_at, now())
