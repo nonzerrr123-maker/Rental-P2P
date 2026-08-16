@@ -1,0 +1,160 @@
+name: Authentication integration check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/**"
+      - ".github/workflows/auth-integration-check.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "my-app/**"
+      - ".github/workflows/auth-integration-check.yml"
+
+jobs:
+  validate-auth:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: p2p_rental
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d p2p_rental"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/p2p_rental
+      DATABASE_POOL_MAX: 5
+      ADMIN_EMAIL: superadmin.auth-ci@example.com
+      ADMIN_PASSWORD: auth-ci-superadmin-password
+      NEXT_TELEMETRY_DISABLED: 1
+
+    defaults:
+      run:
+        working-directory: my-app
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply PostgreSQL schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+
+      - name: Lint authentication files
+        run: >-
+          npx eslint
+          lib/auth/password.ts
+          lib/auth/session.ts
+          app/api/auth/login/route.ts
+          app/api/auth/register/route.ts
+          app/api/auth/me/route.ts
+          app/api/auth/logout/route.ts
+          app/login/page.tsx
+          app/register/page.tsx
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start application
+        run: |
+          nohup npm run start -- -p 3000 > /tmp/rental-auth-next.log 2>&1 &
+          echo $! > /tmp/rental-auth-next.pid
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/api/health/db >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/rental-auth-next.log
+          exit 1
+
+      - name: Register real user
+        run: |
+          code=$(curl --silent --output /tmp/register.json --write-out "%{http_code}" \
+            -X POST http://127.0.0.1:3000/api/auth/register \
+            -H 'Content-Type: application/json' \
+            --data '{"displayName":"Auth CI User","email":"AUTH-CI@example.com","password":"correct-horse-123"}')
+          cat /tmp/register.json
+          test "$code" = "201"
+          node -e 'const d=require("/tmp/register.json"); if(!d.ok || d.user.email!=="auth-ci@example.com" || d.user.role!=="USER" || d.user.verificationStatus!=="UNVERIFIED") process.exit(1)'
+
+          psql "$DATABASE_URL" -Atc "SELECT (password_hash <> 'correct-horse-123')::text || ':' || role::text || ':' || verification_status::text FROM users WHERE email='auth-ci@example.com'" | grep '^true:USER:UNVERIFIED$'
+
+      - name: Reject duplicate registration
+        run: |
+          code=$(curl --silent --output /tmp/duplicate.json --write-out "%{http_code}" \
+            -X POST http://127.0.0.1:3000/api/auth/register \
+            -H 'Content-Type: application/json' \
+            --data '{"displayName":"Duplicate","email":"auth-ci@example.com","password":"correct-horse-123"}')
+          test "$code" = "409"
+
+      - name: Reject incorrect password
+        run: |
+          code=$(curl --silent --output /tmp/bad-login.json --write-out "%{http_code}" \
+            -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"auth-ci@example.com","password":"wrong-password"}')
+          test "$code" = "401"
+
+      - name: Login and resolve current user
+        run: |
+          code=$(curl --silent --output /tmp/login.json --write-out "%{http_code}" \
+            -c /tmp/auth-cookies.txt \
+            -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"auth-ci@example.com","password":"correct-horse-123"}')
+          cat /tmp/login.json
+          test "$code" = "200"
+          node -e 'const d=require("/tmp/login.json"); if(!d.ok || d.redirect!=="/verification" || d.user.verificationStatus!=="UNVERIFIED") process.exit(1)'
+          grep 'rental_session' /tmp/auth-cookies.txt
+          ! grep -q 'rental_role' /tmp/auth-cookies.txt
+
+          curl --fail --silent -b /tmp/auth-cookies.txt http://127.0.0.1:3000/api/auth/me > /tmp/me.json
+          node -e 'const d=require("/tmp/me.json"); if(!d.ok || d.user.email!=="auth-ci@example.com") process.exit(1)'
+
+          psql "$DATABASE_URL" -Atc "SELECT length(token_hash) FROM user_sessions s JOIN users u ON u.id=s.user_id WHERE u.email='auth-ci@example.com' AND revoked_at IS NULL ORDER BY s.created_at DESC LIMIT 1" | grep '^64$'
+
+      - name: Logout revokes session
+        run: |
+          curl --fail --silent -b /tmp/auth-cookies.txt -c /tmp/auth-cookies.txt -X POST http://127.0.0.1:3000/api/auth/logout > /tmp/logout.json
+          node -e 'const d=require("/tmp/logout.json"); if(!d.ok) process.exit(1)'
+
+          code=$(curl --silent --output /tmp/me-after-logout.json --write-out "%{http_code}" -b /tmp/auth-cookies.txt http://127.0.0.1:3000/api/auth/me)
+          test "$code" = "401"
+          psql "$DATABASE_URL" -Atc "SELECT (count(*) > 0)::text FROM user_sessions s JOIN users u ON u.id=s.user_id WHERE u.email='auth-ci@example.com' AND revoked_at IS NOT NULL" | grep '^true$'
+
+      - name: Bootstrap superadmin into database session flow
+        run: |
+          code=$(curl --silent --output /tmp/admin-login.json --write-out "%{http_code}" \
+            -c /tmp/admin-cookies.txt \
+            -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"superadmin.auth-ci@example.com","password":"auth-ci-superadmin-password"}')
+          test "$code" = "200"
+          node -e 'const d=require("/tmp/admin-login.json"); if(!d.ok || d.user.role!=="SUPERADMIN" || d.user.verificationStatus!=="VERIFIED" || d.redirect!=="/admin") process.exit(1)'
+          psql "$DATABASE_URL" -Atc "SELECT role::text || ':' || verification_status::text FROM users WHERE email='superadmin.auth-ci@example.com'" | grep '^SUPERADMIN:VERIFIED$'
+          grep 'rental_session' /tmp/admin-cookies.txt
+
+      - name: Show Next.js log on failure
+        if: failure()
+        run: cat /tmp/rental-auth-next.log || true
