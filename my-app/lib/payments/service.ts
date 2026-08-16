@@ -524,7 +524,7 @@ export async function refundPayment(actorId: string, paymentIdInput: unknown): P
       idempotent: true,
     });
     await client.query(
-      `INSERT INTO admin_audit_logs (admin_id, action, target_type, target_id, metadata)
+      `INSERT INTO admin_audit_logs (actor_user_id, action, target_type, target_id, details)
        VALUES ($1, 'REFUND_PAYMENT', 'PAYMENT', $2, $3::jsonb)`,
       [actorId, initial.original.id, JSON.stringify({ refundPaymentId: initial.refund.id, amount: initial.original.amount })],
     );
