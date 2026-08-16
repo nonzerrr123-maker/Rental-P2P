@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { authorizationErrorResponse, requireVerifiedUser } from "@/lib/auth/authorization";
-import { CommunityError, updateCommunityOffer } from "@/lib/community/service";
+import { CommunityError, expireStaleCommunityRequests, updateCommunityOffer } from "@/lib/community/service";
 
 function communityErrorResponse(error: unknown): NextResponse | null {
   if (!(error instanceof CommunityError)) return null;
@@ -17,6 +17,7 @@ export async function PATCH(
   try {
     const user = await requireVerifiedUser();
     const { id } = await params;
+    await expireStaleCommunityRequests();
     let body: unknown;
     try {
       body = await request.json();
