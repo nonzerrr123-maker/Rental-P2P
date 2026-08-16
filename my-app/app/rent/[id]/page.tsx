@@ -48,7 +48,7 @@ export default async function RentalDetail({ params }: { params: Promise<{ id: s
             <div className="flex flex-wrap items-center gap-2">
               <span className="rounded-full bg-[#faf5df] px-3 py-1 text-xs font-black text-[#84680c]">{item.category}</span>
               <span className="rounded-full bg-neutral-100 px-3 py-1 text-xs font-bold">{conditionLabels[item.condition]}</span>
-              {item.urgentEnabled && <span className="rounded-full bg-neutral-950 px-3 py-1 text-xs font-black text-white">⚡ ยืมด่วน</span>}
+              {item.urgentAvailableNow ? <span className="rounded-full bg-neutral-950 px-3 py-1 text-xs font-black text-white">⚡ ยืมด่วน · ว่างตอนนี้</span> : item.urgentEnabled ? <span className="rounded-full bg-neutral-100 px-3 py-1 text-xs font-black text-neutral-500">⚡ ยืมด่วน · ติดการใช้งานตอนนี้</span> : null}
             </div>
             <h1 className="mt-4 text-3xl font-black tracking-tight md:text-4xl">{item.title}</h1>
             <p className="mt-5 whitespace-pre-wrap leading-7 text-neutral-600">{item.description}</p>
@@ -72,7 +72,7 @@ export default async function RentalDetail({ params }: { params: Promise<{ id: s
             <div className="mt-5 rounded-2xl border p-4"><p className="font-black">{item.owner.displayName}</p><p className="mt-1 text-sm text-neutral-500">{item.owner.verified ? "✓ ยืนยันตัวตนแล้ว" : "ยังไม่ยืนยันตัวตน"}{item.owner.ratingCount > 0 && ` · ⭐ ${Number(item.owner.ratingAverage).toFixed(1)} (${item.owner.ratingCount})`}</p></div>
 
             <BookingForm itemId={item.id} hourlyRate={item.hourlyRate} dailyRate={item.dailyRate} minimumHours={item.minimumHours} depositAmount={item.depositAmount} />
-            {item.urgentEnabled && <UrgentBookingForm itemId={item.id} hourlyRate={item.hourlyRate} dailyRate={item.dailyRate} minimumHours={item.minimumHours} urgentFeeRate={item.urgentReservationFeeRate} />}
+            {item.urgentAvailableNow ? <UrgentBookingForm itemId={item.id} hourlyRate={item.hourlyRate} dailyRate={item.dailyRate} minimumHours={item.minimumHours} urgentFeeRate={item.urgentReservationFeeRate} /> : item.urgentEnabled ? <p className="mt-4 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-800">ยืมด่วนถูกเปิดไว้ แต่รายการนี้มี block/booking ที่ใช้งานอยู่ตอนนี้ ลองเช็กเวลาปกติหรือกลับมาภายหลัง</p> : null}
           </section>
         </aside>
       </div>
