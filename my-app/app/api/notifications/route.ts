@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import { authorizationErrorResponse, requireUser } from "@/lib/auth/authorization";
 import { listNotificationsForUser, markAllNotificationsRead } from "@/lib/notifications/service";
+import { synchronizeCommunicationForUser } from "@/lib/rental/communication";
 
 export async function GET(request: Request) {
   try {
     const user = await requireUser();
+    await synchronizeCommunicationForUser(user.id);
     const limit = Number(new URL(request.url).searchParams.get("limit") || 50);
     const result = await listNotificationsForUser(user.id, limit);
     return NextResponse.json({ ok: true, ...result });
