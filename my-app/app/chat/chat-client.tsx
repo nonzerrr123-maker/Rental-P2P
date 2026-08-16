@@ -5,7 +5,6 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import type { ChatMessage, ConversationSummary } from "@/lib/chat/service";
 import ActivityNavLinks from "@/components/activity-nav-links";
 
-const dateTime = new Intl.DateTimeFormat("th-TH", { dateStyle: "short", timeStyle: "short" });
 const timeOnly = new Intl.DateTimeFormat("th-TH", { hour: "2-digit", minute: "2-digit" });
 const CLOSED = new Set(["REJECTED", "CANCELLED", "EXPIRED", "COMPLETED"]);
 
@@ -25,15 +24,21 @@ export default function ChatClient({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const latestMessageIdRef = useRef("");
+  const receiptTickRef = useRef(0);
+  latestMessageIdRef.current = messages.at(-1)?.id ?? "";
 
   const selected = useMemo(
     () => conversations.find((conversation) => conversation.id === selectedId) ?? null,
     [conversations, selectedId],
   );
 
+  const conversationUrl = requestedRentalId
+    ? `/api/conversations?rentalRequestId=${encodeURIComponent(requestedRentalId)}`
+    : "/api/conversations";
+
   const refreshConversations = async () => {
-    const suffix = requestedRentalId ? `?rentalRequestId=${encodeURIComponent(requestedRentalId)}` : "";
-    const response = await fetch(`/api/conversations${suffix}`, { cache: "no-store" });
+    const response = await fetch(conversationUrl, { cache: "no-store" });
     const payload = await response.json();
     if (!response.ok || !payload.ok) throw new Error(payload.message || "โหลดรายการแชตไม่สำเร็จ");
     const next = payload.conversations as ConversationSummary[];
@@ -41,52 +46,49 @@ export default function ChatClient({
     setSelectedId((current) => current || payload.selectedConversationId || next[0]?.id || "");
   };
 
-  const markRead = async (conversationId: string) => {
-    if (!conversationId) return;
-    await fetch(`/api/conversations/${conversationId}/read`, { method: "POST" }).catch(() => undefined);
-  };
-
-  const loadInitialMessages = async (conversationId: string) => {
-    if (!conversationId) {
-      setMessages([]);
-      setHasMore(false);
-      return;
-    }
-    const response = await fetch(`/api/conversations/${conversationId}/messages?limit=50`, { cache: "no-store" });
-    const payload = await response.json();
-    if (!response.ok || !payload.ok) throw new Error(payload.message || "โหลดข้อความไม่สำเร็จ");
-    setMessages(payload.items as ChatMessage[]);
-    setHasMore(Boolean(payload.hasMore));
-    await markRead(conversationId);
-  };
-
   useEffect(() => {
     let active = true;
-    const run = async () => {
-      try {
-        await refreshConversations();
-      } catch (cause) {
+    fetch(conversationUrl, { cache: "no-store" })
+      .then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.message || "โหลดรายการแชตไม่สำเร็จ");
+        return payload;
+      })
+      .then((payload) => {
+        if (!active) return;
+        const next = payload.conversations as ConversationSummary[];
+        setConversations(next);
+        setSelectedId((current) => current || payload.selectedConversationId || next[0]?.id || "");
+        setError("");
+      })
+      .catch((cause: unknown) => {
         if (active) setError(cause instanceof Error ? cause.message : "โหลดแชตไม่สำเร็จ");
-      } finally {
+      })
+      .finally(() => {
         if (active) setLoading(false);
-      }
-    };
-    void run();
+      });
     return () => { active = false; };
-  }, []);
+  }, [conversationUrl]);
 
   useEffect(() => {
     if (!selectedId) return;
     let active = true;
-    const run = async () => {
-      try {
-        await loadInitialMessages(selectedId);
-        if (active) setError("");
-      } catch (cause) {
+    fetch(`/api/conversations/${selectedId}/messages?limit=50`, { cache: "no-store" })
+      .then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.message || "โหลดข้อความไม่สำเร็จ");
+        return payload;
+      })
+      .then((payload) => {
+        if (!active) return;
+        setMessages(payload.items as ChatMessage[]);
+        setHasMore(Boolean(payload.hasMore));
+        setError("");
+        return fetch(`/api/conversations/${selectedId}/read`, { method: "POST" });
+      })
+      .catch((cause: unknown) => {
         if (active) setError(cause instanceof Error ? cause.message : "โหลดข้อความไม่สำเร็จ");
-      }
-    };
-    void run();
+      });
     return () => { active = false; };
   }, [selectedId]);
 
@@ -96,7 +98,7 @@ export default function ChatClient({
     const poll = async () => {
       if (document.hidden) return;
       try {
-        const lastId = messages.at(-1)?.id;
+        const lastId = latestMessageIdRef.current;
         if (lastId) {
           const response = await fetch(`/api/conversations/${selectedId}/messages?after=${encodeURIComponent(lastId)}&limit=100`, { cache: "no-store" });
           const payload = await response.json();
@@ -105,12 +107,28 @@ export default function ChatClient({
               const known = new Set(current.map((message) => message.id));
               return [...current, ...(payload.items as ChatMessage[]).filter((message) => !known.has(message.id))];
             });
-            await markRead(selectedId);
+            await fetch(`/api/conversations/${selectedId}/read`, { method: "POST" }).catch(() => undefined);
           }
         }
-        if (active) await refreshConversations();
+
+        receiptTickRef.current += 1;
+        if (receiptTickRef.current % 3 === 0) {
+          const receiptsResponse = await fetch(`/api/conversations/${selectedId}/messages?limit=50`, { cache: "no-store" });
+          const receiptsPayload = await receiptsResponse.json();
+          if (receiptsResponse.ok && receiptsPayload.ok && active) {
+            const latest = receiptsPayload.items as ChatMessage[];
+            const latestById = new Map(latest.map((message) => [message.id, message]));
+            setMessages((current) => current.map((message) => latestById.get(message.id) ?? message));
+          }
+        }
+
+        const conversationsResponse = await fetch(conversationUrl, { cache: "no-store" });
+        const conversationsPayload = await conversationsResponse.json();
+        if (conversationsResponse.ok && conversationsPayload.ok && active) {
+          setConversations(conversationsPayload.conversations as ConversationSummary[]);
+        }
       } catch {
-        // Polling is best effort; the explicit send/load paths still surface errors.
+        // Polling is best effort; explicit actions still surface errors.
       }
     };
     const interval = window.setInterval(() => void poll(), 4000);
@@ -121,7 +139,7 @@ export default function ChatClient({
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [selectedId, messages]);
+  }, [conversationUrl, selectedId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -204,7 +222,7 @@ export default function ChatClient({
                 <div className="space-y-3">
                   {messages.map((message) => {
                     const mine = message.sender.id === currentUserId;
-                    return <div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}><div className={`max-w-[82%] rounded-2xl px-4 py-3 sm:max-w-[70%] ${mine ? "rounded-br-md bg-neutral-950 text-white" : "rounded-bl-md border bg-white"}`}><p className="whitespace-pre-wrap break-words text-sm leading-6">{message.body}</p><p className={`mt-1 text-[11px] ${mine ? "text-neutral-400" : "text-neutral-400"}`}>{timeOnly.format(new Date(message.createdAt))}{mine && message.readByOtherAt ? " · อ่านแล้ว" : ""}</p></div></div>;
+                    return <div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}><div className={`max-w-[82%] rounded-2xl px-4 py-3 sm:max-w-[70%] ${mine ? "rounded-br-md bg-neutral-950 text-white" : "rounded-bl-md border bg-white"}`}><p className="whitespace-pre-wrap break-words text-sm leading-6">{message.body}</p><p className="mt-1 text-[11px] text-neutral-400">{timeOnly.format(new Date(message.createdAt))}{mine && message.readByOtherAt ? " · อ่านแล้ว" : ""}</p></div></div>;
                   })}
                   {messages.length === 0 && <p className="py-16 text-center text-sm text-neutral-400">ยังไม่มีข้อความ เริ่มนัดรายละเอียดการรับ-ส่งได้เลย</p>}
                   <div ref={bottomRef} />
@@ -224,7 +242,6 @@ export default function ChatClient({
           )}
         </section>
       </div>
-      <span className="sr-only">{selected?.lastMessage ? dateTime.format(new Date(selected.lastMessage.createdAt)) : ""}</span>
     </main>
   );
 }
