@@ -1,5 +1,5 @@
 import type { PoolClient, QueryResultRow } from "pg";
-import { query, withTransaction } from "@/lib/db";
+import { withTransaction } from "@/lib/db";
 import { getPaymentProviderState } from "@/lib/payments/registry";
 import { getCheckoutForUser, PaymentError, type CheckoutSummary, type PaymentType } from "@/lib/payments/service";
 
@@ -139,6 +139,7 @@ export async function startOmiseCheckout(userId: string, rentalRequestIdInput: u
         returnUrl: returnUrl ?? null,
       });
       if (created.action.kind !== "QR") throw new Error("Omise PromptPay checkout did not return a QR action");
+      const qrImageUrl = created.action.imageUrl;
       const allocationIds = prepared.payments.map((payment) => payment.id);
       await withTransaction(async (client) => {
         await client.query(
@@ -147,7 +148,7 @@ export async function startOmiseCheckout(userId: string, rentalRequestIdInput: u
                metadata = metadata || $3::jsonb, updated_at=now()
            WHERE id=$1 AND provider_reference IS NULL`,
           [anchor.id, created.providerReference, JSON.stringify({
-            providerAction: { kind: "QR", imageUrl: created.action.imageUrl },
+            providerAction: { kind: "QR", imageUrl: qrImageUrl },
             providerChargeAmountMinor: totalMinor,
             providerAllocationPaymentIds: allocationIds,
             providerObservedStatus: created.metadata?.providerObservedStatus ?? "pending",
