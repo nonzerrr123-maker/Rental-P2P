@@ -2,42 +2,20 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import SiteHeader from "@/components/site-header";
+import { CheckIcon, ClockIcon, ShieldCheckIcon } from "@/components/ui/icons";
+import { SectionEyebrow, StatusPill } from "@/components/ui/primitives";
 
 type VerificationStatus = "UNVERIFIED" | "PENDING" | "VERIFIED" | "REJECTED";
-
-type VerificationRecord = {
-  id: string;
-  provider: string;
-  status: Exclude<VerificationStatus, "UNVERIFIED">;
-  submittedAt: string;
-  reviewedAt: string | null;
-  rejectionReason: string | null;
-  metadata: Record<string, unknown>;
-};
-
-type ProviderState = {
-  mode: "PERSONA" | "MANUAL_ADMIN";
-  ready: boolean;
-  reason: "CONFIGURED" | "MANUAL_MODE" | "PERSONA_CONFIG_INCOMPLETE";
-};
-
-type VerificationOverview = {
-  verificationStatus: VerificationStatus;
-  latest: VerificationRecord | null;
-  provider: ProviderState;
-};
+type VerificationRecord = { id: string; provider: string; status: Exclude<VerificationStatus, "UNVERIFIED">; submittedAt: string; reviewedAt: string | null; rejectionReason: string | null; metadata: Record<string, unknown> };
+type ProviderState = { mode: "PERSONA" | "MANUAL_ADMIN"; ready: boolean; reason: "CONFIGURED" | "MANUAL_MODE" | "PERSONA_CONFIG_INCOMPLETE" };
+type VerificationOverview = { verificationStatus: VerificationStatus; latest: VerificationRecord | null; provider: ProviderState };
 
 async function fetchOverview(): Promise<VerificationOverview> {
   const response = await fetch("/api/verification", { cache: "no-store" });
   const result = await response.json();
-  if (!response.ok || !result.ok) {
-    throw new Error(result.message ?? "ไม่สามารถโหลดสถานะการยืนยันตัวตนได้");
-  }
-  return {
-    verificationStatus: result.verificationStatus,
-    latest: result.latest,
-    provider: result.provider,
-  };
+  if (!response.ok || !result.ok) throw new Error(result.message ?? "ไม่สามารถโหลดสถานะการยืนยันตัวตนได้");
+  return { verificationStatus: result.verificationStatus, latest: result.latest, provider: result.provider };
 }
 
 export default function VerificationPage() {
@@ -50,92 +28,41 @@ export default function VerificationPage() {
 
   const loadOverview = async () => {
     setLoading(true);
-    try {
-      setOverview(await fetchOverview());
-      setMessage("");
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "ไม่สามารถเชื่อมต่อระบบยืนยันตัวตนได้");
-    } finally {
-      setLoading(false);
-    }
+    try { setOverview(await fetchOverview()); setMessage(""); }
+    catch (error) { setMessage(error instanceof Error ? error.message : "ไม่สามารถเชื่อมต่อระบบยืนยันตัวตนได้"); }
+    finally { setLoading(false); }
   };
 
   useEffect(() => {
     let active = true;
-    void fetchOverview()
-      .then((nextOverview) => {
-        if (!active) return;
-        setOverview(nextOverview);
-        setMessage("");
-      })
-      .catch((error: unknown) => {
-        if (!active) return;
-        setMessage(error instanceof Error ? error.message : "ไม่สามารถเชื่อมต่อระบบยืนยันตัวตนได้");
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
+    void fetchOverview().then((next) => { if (active) { setOverview(next); setMessage(""); } }).catch((error: unknown) => { if (active) setMessage(error instanceof Error ? error.message : "ไม่สามารถเชื่อมต่อระบบยืนยันตัวตนได้"); }).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
   }, []);
 
   const submit = async () => {
-    if (overview?.provider.mode === "PERSONA" && !consent) {
-      setMessage("กรุณายอมรับการส่งข้อมูลให้ผู้ให้บริการยืนยันตัวตนก่อนเริ่ม KYC");
-      return;
-    }
-
-    setSubmitting(true);
-    setMessage("");
+    if (overview?.provider.mode === "PERSONA" && !consent) { setMessage("กรุณายอมรับการส่งข้อมูลให้ผู้ให้บริการยืนยันตัวตนก่อนเริ่ม KYC"); return; }
+    setSubmitting(true); setMessage("");
     try {
-      const response = await fetch("/api/verification", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ consent }),
-      });
+      const response = await fetch("/api/verification", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ consent }) });
       const result = await response.json();
-      if (!response.ok || !result.ok) {
-        setMessage(result.message ?? "ส่งคำขอยืนยันตัวตนไม่สำเร็จ");
-        return;
-      }
-
-      if (result.mode === "PERSONA" && typeof result.redirectUrl === "string") {
-        window.location.href = result.redirectUrl;
-        return;
-      }
-
-      if (result.fallbackReason === "PERSONA_START_FAILED") {
-        setMessage("Persona เริ่มทำงานไม่สำเร็จ ระบบจึงส่งคำขอให้ Admin/Superadmin ตรวจแบบ Manual แทนแล้ว");
-      } else if (result.fallbackReason === "PERSONA_CONFIG_INCOMPLETE") {
-        setMessage("Persona ยังตั้งค่าไม่ครบ ระบบจึงใช้ Manual Admin Review ชั่วคราว");
-      }
+      if (!response.ok || !result.ok) { setMessage(result.message ?? "ส่งคำขอยืนยันตัวตนไม่สำเร็จ"); return; }
+      if (result.mode === "PERSONA" && typeof result.redirectUrl === "string") { window.location.href = result.redirectUrl; return; }
+      if (result.fallbackReason === "PERSONA_START_FAILED") setMessage("Persona เริ่มทำงานไม่สำเร็จ ระบบส่งคำขอให้ผู้ดูแลตรวจแบบ Manual แทนแล้ว");
+      else if (result.fallbackReason === "PERSONA_CONFIG_INCOMPLETE") setMessage("Persona ยังตั้งค่าไม่ครบ ระบบใช้ Manual Review ชั่วคราว");
       await loadOverview();
-    } catch {
-      setMessage("ไม่สามารถเริ่มระบบยืนยันตัวตนได้");
-    } finally {
-      setSubmitting(false);
-    }
+    } catch { setMessage("ไม่สามารถเริ่มระบบยืนยันตัวตนได้"); }
+    finally { setSubmitting(false); }
   };
 
   const resume = async () => {
-    setResuming(true);
-    setMessage("");
+    setResuming(true); setMessage("");
     try {
       const response = await fetch("/api/verification/resume", { method: "POST" });
       const result = await response.json();
-      if (!response.ok || !result.ok) {
-        setMessage(result.message ?? "ไม่สามารถเปิด KYC ต่อได้");
-        return;
-      }
-      if (typeof result.redirectUrl === "string") {
-        window.location.href = result.redirectUrl;
-      }
-    } catch {
-      setMessage("ไม่สามารถเปิด Persona KYC ต่อได้");
-    } finally {
-      setResuming(false);
-    }
+      if (!response.ok || !result.ok) { setMessage(result.message ?? "ไม่สามารถเปิด KYC ต่อได้"); return; }
+      if (typeof result.redirectUrl === "string") window.location.href = result.redirectUrl;
+    } catch { setMessage("ไม่สามารถเปิด Persona KYC ต่อได้"); }
+    finally { setResuming(false); }
   };
 
   const status = overview?.verificationStatus;
@@ -144,119 +71,35 @@ export default function VerificationPage() {
   const pendingPersona = status === "PENDING" && latest?.provider === "PERSONA";
 
   return (
-    <main className="min-h-screen bg-gray-50 px-5 py-12 text-black sm:px-6 sm:py-16">
-      <div className="mx-auto max-w-2xl rounded-2xl border bg-white p-6 shadow-sm sm:p-8 md:p-10">
-        <p className="text-sm font-bold tracking-[3px] text-[#B08D18]">TRUST & SAFETY</p>
-        <h1 className="mt-3 text-3xl font-black">ยืนยันตัวตน</h1>
-        <p className="mt-3 leading-7 text-gray-500">
-          ต้องยืนยันตัวตนก่อนลงของหรือส่งคำขอยืม สถานะสิทธิ์ทั้งหมดอ้างอิงจาก PostgreSQL ฝั่ง server
-        </p>
+    <main className="min-h-screen bg-[var(--canvas)] text-[var(--ink)]">
+      <SiteHeader />
+      <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6 sm:py-12">
+        <SectionEyebrow>Trust & safety</SectionEyebrow>
+        <h1 className="mt-2 text-3xl font-black tracking-[-0.045em] sm:text-4xl">ยืนยันตัวตนก่อนเริ่มยืม</h1>
+        <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--muted)] sm:text-base">KYC ช่วยให้คนสองฝั่งรู้ว่ากำลังทำรายการกับบัญชีที่ผ่านการตรวจจริง โดยแอปไม่เก็บภาพบัตรหรือข้อมูลชีวมิติแบบ raw</p>
 
-        {!loading && overview && (
-          <div className={`mt-6 rounded-xl border p-4 text-sm ${personaReady ? "border-green-200 bg-green-50 text-green-900" : "border-[#D4AF37]/40 bg-[#fffaf0] text-gray-700"}`}>
-            <b>{personaReady ? "Persona KYC พร้อมใช้งาน" : "Manual Admin Review"}</b>
-            <p className="mt-1 leading-6">
-              {personaReady
-                ? "ระบบจะพาไป Hosted Flow ของ Persona เพื่อทำ Government ID + Selfie/Liveness ตาม Inquiry Template ที่ตั้งค่าไว้"
-                : overview.provider.reason === "PERSONA_CONFIG_INCOMPLETE"
-                  ? "ตั้งค่า Persona ยังไม่ครบ จึงเปิด fallback ให้ Admin/Superadmin อนุมัติแทนโดยอัตโนมัติ"
-                  : "ขณะนี้ใช้ Admin/Superadmin ตรวจและอนุมัติคำขอโดยตรง"}
-            </p>
+        <section className="mt-7 overflow-hidden rounded-[28px] border border-[var(--line)] bg-white shadow-[var(--shadow-soft)]">
+          <div className="border-b border-[var(--line)] p-5 sm:p-7">
+            <div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><span className="grid h-11 w-11 place-items-center rounded-2xl bg-[var(--gold-soft)] text-[var(--gold-strong)]"><ShieldCheckIcon size={22}/></span><div><p className="text-xs font-bold text-[var(--muted)]">สถานะบัญชี</p><p className="mt-1 font-black">{loading ? "กำลังตรวจสอบ..." : status ?? "ไม่ทราบสถานะ"}</p></div></div>{status && <StatusPill tone={status === "VERIFIED" ? "success" : status === "REJECTED" ? "danger" : "gold"}>{status}</StatusPill>}</div>
           </div>
-        )}
 
-        {loading ? (
-          <div className="mt-8 rounded-xl border bg-gray-50 p-8 text-center text-gray-500">กำลังโหลดสถานะ...</div>
-        ) : status === "VERIFIED" ? (
-          <section className="mt-8 rounded-xl border border-green-200 bg-green-50 p-8 text-center">
-            <div className="text-5xl">✅</div>
-            <h2 className="mt-4 text-xl font-black text-green-900">ยืนยันตัวตนแล้ว</h2>
-            <p className="mt-2 text-sm leading-6 text-green-800">บัญชีนี้สามารถลงของและส่งคำขอยืมได้แล้ว</p>
-            <div className="mt-6 flex flex-wrap justify-center gap-3">
-              <Link href="/rent" className="rounded-lg border border-green-300 bg-white px-5 py-3 font-bold">ค้นหาของ</Link>
-              <Link href="/lend" className="rounded-lg bg-black px-5 py-3 font-bold text-white">ลงของให้ยืม</Link>
+          {loading ? <div className="p-8 text-sm text-[var(--muted)]">กำลังโหลดสถานะ...</div> : status === "VERIFIED" ? (
+            <div className="p-6 text-center sm:p-8"><div className="mx-auto grid h-14 w-14 place-items-center rounded-full bg-emerald-50 text-emerald-700"><CheckIcon size={26}/></div><h2 className="mt-4 text-xl font-black">ยืนยันตัวตนแล้ว</h2><p className="mt-2 text-sm text-[var(--muted)]">บัญชีนี้พร้อมยืมของ ปล่อยของ และส่งข้อเสนอใน Community</p><div className="mt-6 flex flex-col justify-center gap-2 sm:flex-row"><Link href="/rent" className="rounded-xl border border-[var(--line)] px-5 py-3 text-sm font-black">ค้นหาของ</Link><Link href="/lend" className="rounded-xl bg-[var(--ink)] px-5 py-3 text-sm font-black text-white">ลงของให้ยืม</Link></div></div>
+          ) : status === "PENDING" ? (
+            <div className="p-6 sm:p-8"><div className="flex items-start gap-3"><span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-[var(--gold-soft)] text-[var(--gold-strong)]"><ClockIcon size={21}/></span><div><h2 className="font-black">กำลังรอตรวจสอบ</h2><p className="mt-1 text-sm leading-6 text-[var(--muted)]">คำขอถูกส่งผ่าน {latest?.provider === "PERSONA" ? "Persona" : "Manual Admin Review"}{latest?.submittedAt ? ` เมื่อ ${new Date(latest.submittedAt).toLocaleString("th-TH")}` : ""}</p></div></div>{pendingPersona && <button disabled={resuming} onClick={() => void resume()} className="mt-5 w-full rounded-xl bg-[var(--ink)] px-5 py-3 text-sm font-black text-white disabled:opacity-50">{resuming ? "กำลังเปิด Persona..." : "ทำ Persona KYC ต่อ"}</button>}</div>
+          ) : (
+            <div className="p-5 sm:p-7">
+              {status === "REJECTED" && <div className="mb-5 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"><b>คำขอก่อนหน้าถูกปฏิเสธ</b><p className="mt-1">{latest?.rejectionReason ?? "ตรวจสอบข้อมูลแล้วส่งคำขอใหม่ได้"}</p></div>}
+              <div className="grid gap-3 sm:grid-cols-3">{[["01","เริ่ม KYC"],["02","ตรวจเอกสาร/ใบหน้า"],["03","ปลดล็อกการใช้งาน"]].map(([number,label]) => <div key={number} className="rounded-2xl bg-[var(--surface-2)] p-4"><span className="text-xs font-black text-[var(--gold-strong)]">{number}</span><p className="mt-2 text-sm font-bold">{label}</p></div>)}</div>
+              <div className="mt-6 rounded-2xl border border-[var(--line)] p-4"><p className="font-black">{personaReady ? "Persona Identity Verification" : "Manual verification"}</p><p className="mt-2 text-sm leading-6 text-[var(--muted)]">{personaReady ? "ข้อมูลที่จำเป็นถูกส่งตรงไปยัง Hosted KYC ของ Persona และ Borow Borow เก็บเพียง reference/status/audit metadata ขั้นต่ำ" : "ระบบจะสร้างคำขอให้ Admin/Superadmin ตรวจ เพื่อให้ MVP ใช้งานได้โดยไม่ผูกกับบริการภายนอกที่ยังไม่พร้อม"}</p></div>
+              {personaReady && <label className="mt-4 flex items-start gap-3 rounded-2xl bg-[var(--surface-2)] p-4 text-sm leading-6"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} className="mt-1 h-5 w-5 accent-[var(--gold-strong)]"/><span>ฉันยินยอมให้ส่งข้อมูลที่จำเป็นสำหรับ KYC ไปยัง Persona รวมถึงข้อมูลเอกสารราชการและข้อมูลใบหน้า/liveness ตาม flow</span></label>}
+              <button disabled={submitting || (personaReady && !consent)} onClick={() => void submit()} className="mt-5 min-h-12 w-full rounded-xl bg-[var(--gold)] px-6 py-3 font-black text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50">{submitting ? "กำลังเริ่มยืนยันตัวตน..." : personaReady ? "เริ่ม Persona KYC" : status === "REJECTED" ? "ส่งคำขอใหม่" : "ส่งคำขอให้ผู้ดูแลตรวจ"}</button>
             </div>
-          </section>
-        ) : status === "PENDING" ? (
-          <section className="mt-8 rounded-xl border border-[#D4AF37] bg-[#fffaf0] p-8 text-center">
-            <div className="text-5xl">⏳</div>
-            <h2 className="mt-4 text-xl font-black">กำลังรอตรวจสอบ</h2>
-            <p className="mt-2 text-sm leading-6 text-gray-600">
-              คำขออยู่ในสถานะ <b>PENDING</b> ผ่าน {latest?.provider === "PERSONA" ? "Persona" : "Manual Admin Review"}
-            </p>
-            {latest?.submittedAt && (
-              <p className="mt-3 text-xs text-gray-500">ส่งเมื่อ {new Date(latest.submittedAt).toLocaleString("th-TH")}</p>
-            )}
-            {pendingPersona && (
-              <button
-                disabled={resuming}
-                onClick={() => void resume()}
-                className="mt-5 rounded-lg bg-black px-5 py-3 text-sm font-bold text-white disabled:opacity-50"
-              >
-                {resuming ? "กำลังเปิด Persona..." : "ทำ Persona KYC ต่อ"}
-              </button>
-            )}
-            <p className="mt-4 text-xs leading-5 text-gray-500">
-              หาก provider ใช้งานไม่ได้ Admin/Superadmin ยังสามารถตรวจและตัดสินคำขอ PENDING นี้ได้จาก Admin Console
-            </p>
-          </section>
-        ) : (
-          <section className="mt-8 rounded-xl border border-gray-200 p-6 sm:p-8">
-            {status === "REJECTED" ? (
-              <div className="mb-6 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">
-                <b>คำขอก่อนหน้าถูกปฏิเสธ</b>
-                <p className="mt-1">{latest?.rejectionReason ?? "กรุณาตรวจสอบข้อมูลและส่งคำขอใหม่"}</p>
-              </div>
-            ) : null}
+          )}
+        </section>
 
-            <div className="grid gap-4 sm:grid-cols-3">
-              <div className="rounded-xl bg-gray-50 p-4"><b>01</b><p className="mt-2 text-sm">เริ่ม KYC</p></div>
-              <div className="rounded-xl bg-gray-50 p-4"><b>02</b><p className="mt-2 text-sm">ตรวจบัตร + ใบหน้า</p></div>
-              <div className="rounded-xl bg-gray-50 p-4"><b>03</b><p className="mt-2 text-sm">ปลดล็อกการยืม</p></div>
-            </div>
-
-            <h2 className="mt-7 text-xl font-black">{personaReady ? "Persona Identity Verification" : "Manual verification workflow"}</h2>
-            <p className="mt-2 text-sm leading-6 text-gray-500">
-              {personaReady
-                ? "ข้อมูลเอกสารและข้อมูลใบหน้าจะถูกส่งตรงไปยัง Persona ตาม flow ที่ตั้งค่า แอปของเราเก็บเพียง provider reference, สถานะ และ audit metadata ขั้นต่ำ"
-                : "ระบบจะสร้างคำขอในฐานข้อมูลและส่งให้ Admin/Superadmin ตรวจสอบ เพื่อไม่ให้ external KYC ที่ยังไม่พร้อมบล็อกการใช้งาน MVP"}
-            </p>
-
-            {personaReady && (
-              <label className="mt-5 flex items-start gap-3 rounded-lg border bg-gray-50 p-4 text-sm leading-6">
-                <input
-                  type="checkbox"
-                  checked={consent}
-                  onChange={(event) => setConsent(event.target.checked)}
-                  className="mt-1 h-4 w-4"
-                />
-                <span>
-                  ฉันยินยอมให้ส่งข้อมูลที่จำเป็นสำหรับการยืนยันตัวตนไปยัง Persona รวมถึงข้อมูลจากเอกสารราชการและข้อมูลใบหน้า/liveness ตาม KYC flow
-                </span>
-              </label>
-            )}
-
-            <button
-              disabled={submitting || (personaReady && !consent)}
-              onClick={() => void submit()}
-              className="mt-6 w-full rounded-lg bg-[#D4AF37] px-6 py-3.5 font-black text-black disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {submitting
-                ? "กำลังเริ่มยืนยันตัวตน..."
-                : personaReady
-                  ? "เริ่ม Persona KYC"
-                  : status === "REJECTED"
-                    ? "ส่งคำขอใหม่"
-                    : "ส่งคำขอให้ Admin ตรวจ"}
-            </button>
-          </section>
-        )}
-
-        {message && <p className="mt-5 rounded-lg bg-red-50 p-3 text-sm text-red-700">{message}</p>}
-
-        <div className="mt-8 rounded-lg bg-gray-50 p-4 text-xs leading-6 text-gray-500">
-          ความเป็นส่วนตัว: PostgreSQL ของแอปไม่เก็บภาพบัตรประชาชนหรือข้อมูลชีวมิติแบบ raw และ webhook audit จะไม่เก็บ payload ที่มี PII โดยตรง
-        </div>
+        {!loading && overview && <p className="mt-4 text-xs leading-5 text-[var(--muted)]">Provider: {personaReady ? "Persona" : "Manual Admin Review"} · สิทธิ์การยืมถูกตรวจซ้ำฝั่ง server ทุกครั้ง</p>}
+        {message && <p role="alert" className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{message}</p>}
       </div>
     </main>
   );
