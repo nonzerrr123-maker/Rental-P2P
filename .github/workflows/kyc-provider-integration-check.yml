@@ -1,0 +1,291 @@
+name: KYC provider integration check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/**"
+      - ".github/workflows/kyc-provider-integration-check.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "my-app/**"
+      - ".github/workflows/kyc-provider-integration-check.yml"
+
+jobs:
+  validate-kyc-provider:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: p2p_rental
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d p2p_rental"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/p2p_rental
+      DATABASE_POOL_MAX: 5
+      ADMIN_EMAIL: superadmin.provider-ci@example.com
+      ADMIN_PASSWORD: provider-ci-superadmin-password
+      NEXT_TELEMETRY_DISABLED: 1
+      KYC_PROVIDER: persona
+      PERSONA_API_BASE_URL: http://127.0.0.1:4010
+      PERSONA_API_KEY: persona-ci-api-key
+      PERSONA_INQUIRY_TEMPLATE_ID: itmpl_ci_thailand
+      PERSONA_WEBHOOK_SECRET: persona-ci-webhook-secret
+      PERSONA_WEBHOOK_TOLERANCE_SECONDS: 300
+
+    defaults:
+      run:
+        working-directory: my-app
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply PostgreSQL schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+
+      - name: Lint KYC provider scope
+        run: >-
+          npx eslint
+          lib/verification/persona.ts
+          lib/verification/provider.ts
+          app/api/verification/route.ts
+          app/api/verification/resume/route.ts
+          app/api/verification/webhooks/persona/route.ts
+          app/verification/page.tsx
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start mock Persona API
+        run: |
+          cat >/tmp/persona-mock.cjs <<'NODE'
+          const http = require('node:http');
+          const server = http.createServer((req, res) => {
+            let body = '';
+            req.on('data', chunk => { body += chunk; });
+            req.on('end', () => {
+              res.setHeader('Content-Type', 'application/json');
+              if (req.headers.authorization !== 'Bearer persona-ci-api-key') {
+                res.statusCode = 401;
+                res.end(JSON.stringify({ error: 'unauthorized' }));
+                return;
+              }
+
+              if (req.method === 'POST' && req.url.startsWith('/api/v1/inquiries?')) {
+                const payload = JSON.parse(body || '{}');
+                const ref = payload?.data?.attributes?.['reference-id'];
+                const template = payload?.data?.attributes?.['inquiry-template-id'];
+                if (!ref || template !== 'itmpl_ci_thailand') {
+                  res.statusCode = 422;
+                  res.end(JSON.stringify({ error: 'invalid inquiry' }));
+                  return;
+                }
+                const inquiryId = `inq_ci_${String(ref).replaceAll('-', '').slice(0, 20)}`;
+                res.statusCode = 201;
+                res.end(JSON.stringify({
+                  data: { id: inquiryId, type: 'inquiry', attributes: { status: 'created', 'reference-id': ref } },
+                  meta: { 'one-time-link': `https://withpersona.example/verify?code=${inquiryId}` },
+                }));
+                return;
+              }
+
+              const match = req.url.match(/^\/api\/v1\/inquiries\/(inq_ci_[^/]+)\/generate-one-time-link$/);
+              if (req.method === 'POST' && match) {
+                res.statusCode = 200;
+                res.end(JSON.stringify({
+                  data: { id: match[1], type: 'inquiry' },
+                  meta: { 'one-time-link': `https://withpersona.example/verify?resume=${match[1]}` },
+                }));
+                return;
+              }
+
+              res.statusCode = 404;
+              res.end(JSON.stringify({ error: 'not found' }));
+            });
+          });
+          server.listen(4010, '127.0.0.1');
+          NODE
+          nohup node /tmp/persona-mock.cjs >/tmp/persona-mock.log 2>&1 &
+          echo $! >/tmp/persona-mock.pid
+          for attempt in {1..20}; do
+            if curl --silent http://127.0.0.1:4010/not-found >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/persona-mock.log
+          exit 1
+
+      - name: Start application
+        run: |
+          nohup npm run start -- -p 3000 > /tmp/rental-persona-next.log 2>&1 &
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/api/health/db >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/rental-persona-next.log
+          exit 1
+
+      - name: Register and login Persona user
+        run: |
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register \
+            -H 'Content-Type: application/json' \
+            --data '{"displayName":"Persona User","email":"persona-ci@example.com","password":"persona-password-123"}' >/tmp/persona-register.json
+          curl --fail --silent -c /tmp/persona-user-cookies.txt -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"persona-ci@example.com","password":"persona-password-123"}' >/tmp/persona-login.json
+          curl --fail --silent -b /tmp/persona-user-cookies.txt http://127.0.0.1:3000/api/verification >/tmp/persona-before.json
+          node -e 'const d=require("/tmp/persona-before.json"); if(!d.ok || d.provider.mode!=="PERSONA" || d.provider.reason!=="CONFIGURED") process.exit(1)'
+
+      - name: Require consent and start Persona hosted flow
+        run: |
+          code=$(curl --silent --output /tmp/no-consent.json --write-out "%{http_code}" -b /tmp/persona-user-cookies.txt -X POST http://127.0.0.1:3000/api/verification \
+            -H 'Content-Type: application/json' --data '{"consent":false}')
+          test "$code" = "400"
+          node -e 'const d=require("/tmp/no-consent.json"); if(d.code!=="CONSENT_REQUIRED") process.exit(1)'
+
+          code=$(curl --silent --output /tmp/persona-start.json --write-out "%{http_code}" -b /tmp/persona-user-cookies.txt -X POST http://127.0.0.1:3000/api/verification \
+            -H 'Content-Type: application/json' --data '{"consent":true}')
+          test "$code" = "201"
+          node -e 'const d=require("/tmp/persona-start.json"); if(!d.ok || d.mode!=="PERSONA" || !d.redirectUrl || d.verification.provider!=="PERSONA" || d.verification.status!=="PENDING") process.exit(1)'
+
+          USER_ID=$(psql "$DATABASE_URL" -Atc "SELECT id FROM users WHERE email='persona-ci@example.com'")
+          INQUIRY_ID=$(psql "$DATABASE_URL" -Atc "SELECT provider_reference FROM identity_verifications WHERE user_id='$USER_ID' ORDER BY submitted_at DESC LIMIT 1")
+          test -n "$USER_ID"
+          test "${INQUIRY_ID#inq_ci_}" != "$INQUIRY_ID"
+          printf '%s' "$USER_ID" >/tmp/persona-user-id
+          printf '%s' "$INQUIRY_ID" >/tmp/persona-inquiry-id
+
+      - name: Resume pending Persona inquiry
+        run: |
+          curl --fail --silent -b /tmp/persona-user-cookies.txt -X POST http://127.0.0.1:3000/api/verification/resume >/tmp/persona-resume.json
+          node -e 'const d=require("/tmp/persona-resume.json"); if(!d.ok || !d.redirectUrl.includes("resume=inq_ci_")) process.exit(1)'
+
+      - name: Reject tampered Persona webhook
+        run: |
+          printf '%s' '{"data":{"id":"evt_bad","attributes":{"name":"inquiry.approved","payload":{"data":{"id":"inq_bad"}}}}}' >/tmp/bad-event.json
+          code=$(curl --silent --output /tmp/bad-webhook-response.json --write-out "%{http_code}" -X POST http://127.0.0.1:3000/api/verification/webhooks/persona \
+            -H 'Content-Type: application/json' -H 'Persona-Signature: t=1,v1=deadbeef' --data-binary @/tmp/bad-event.json)
+          test "$code" = "401"
+
+      - name: Completed event remains pending and duplicate is idempotent
+        run: |
+          USER_ID=$(cat /tmp/persona-user-id)
+          INQUIRY_ID=$(cat /tmp/persona-inquiry-id)
+          USER_ID="$USER_ID" INQUIRY_ID="$INQUIRY_ID" node -e '
+            const fs=require("node:fs");
+            const payload={data:{type:"event",id:"evt_persona_completed",attributes:{name:"inquiry.completed",payload:{data:{type:"inquiry",id:process.env.INQUIRY_ID,attributes:{status:"completed","reference-id":process.env.USER_ID}}}}}};
+            fs.writeFileSync("/tmp/completed-event.json",JSON.stringify(payload));'
+          TS=$(date +%s)
+          SIG=$(TS="$TS" node -e 'const fs=require("node:fs"),c=require("node:crypto");const b=fs.readFileSync("/tmp/completed-event.json","utf8");process.stdout.write(c.createHmac("sha256","persona-ci-webhook-secret").update(`${process.env.TS}.${b}`).digest("hex"))')
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/verification/webhooks/persona \
+            -H 'Content-Type: application/json' -H "Persona-Signature: t=$TS,v1=$SIG" --data-binary @/tmp/completed-event.json >/tmp/completed-response.json
+          node -e 'const d=require("/tmp/completed-response.json"); if(!d.ok || d.duplicate || d.outcome!=="RECORDED_NON_TERMINAL" || d.verificationStatus!=="PENDING") process.exit(1)'
+
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/verification/webhooks/persona \
+            -H 'Content-Type: application/json' -H "Persona-Signature: t=$TS,v1=$SIG" --data-binary @/tmp/completed-event.json >/tmp/completed-duplicate.json
+          node -e 'const d=require("/tmp/completed-duplicate.json"); if(!d.ok || !d.duplicate || d.outcome!=="DUPLICATE") process.exit(1)'
+          test "$(psql "$DATABASE_URL" -Atc "SELECT COUNT(*) FROM admin_audit_logs WHERE action='KYC_PROVIDER_EVENT' AND details->>'eventId'='evt_persona_completed'")" = "1"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT verification_status FROM users WHERE email='persona-ci@example.com'")" = "PENDING"
+
+      - name: Approved event verifies user and unlocks rental access
+        run: |
+          USER_ID=$(cat /tmp/persona-user-id)
+          INQUIRY_ID=$(cat /tmp/persona-inquiry-id)
+          USER_ID="$USER_ID" INQUIRY_ID="$INQUIRY_ID" node -e '
+            const fs=require("node:fs");
+            const payload={data:{type:"event",id:"evt_persona_approved",attributes:{name:"inquiry.approved",payload:{data:{type:"inquiry",id:process.env.INQUIRY_ID,attributes:{status:"approved","reference-id":process.env.USER_ID}}}}}};
+            fs.writeFileSync("/tmp/approved-event.json",JSON.stringify(payload));'
+          TS=$(date +%s)
+          SIG=$(TS="$TS" node -e 'const fs=require("node:fs"),c=require("node:crypto");const b=fs.readFileSync("/tmp/approved-event.json","utf8");process.stdout.write(c.createHmac("sha256","persona-ci-webhook-secret").update(`${process.env.TS}.${b}`).digest("hex"))')
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/verification/webhooks/persona \
+            -H 'Content-Type: application/json' -H "Persona-Signature: t=$TS,v1=$SIG" --data-binary @/tmp/approved-event.json >/tmp/approved-response.json
+          node -e 'const d=require("/tmp/approved-response.json"); if(!d.ok || d.outcome!=="APPLIED_VERIFIED" || d.verificationStatus!=="VERIFIED") process.exit(1)'
+          test "$(psql "$DATABASE_URL" -Atc "SELECT verification_status FROM users WHERE email='persona-ci@example.com'")" = "VERIFIED"
+          curl --fail --silent -b /tmp/persona-user-cookies.txt http://127.0.0.1:3000/api/rental/access >/tmp/persona-rental-access.json
+          node -e 'const d=require("/tmp/persona-rental-access.json"); if(!d.ok || d.user.verificationStatus!=="VERIFIED") process.exit(1)'
+
+      - name: Declined event rejects a second Persona user
+        run: |
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register \
+            -H 'Content-Type: application/json' \
+            --data '{"displayName":"Declined User","email":"declined-ci@example.com","password":"declined-password-123"}' >/tmp/declined-register.json
+          curl --fail --silent -c /tmp/declined-cookies.txt -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"declined-ci@example.com","password":"declined-password-123"}' >/tmp/declined-login.json
+          curl --fail --silent -b /tmp/declined-cookies.txt -X POST http://127.0.0.1:3000/api/verification \
+            -H 'Content-Type: application/json' --data '{"consent":true}' >/tmp/declined-start.json
+
+          USER_ID=$(psql "$DATABASE_URL" -Atc "SELECT id FROM users WHERE email='declined-ci@example.com'")
+          INQUIRY_ID=$(psql "$DATABASE_URL" -Atc "SELECT provider_reference FROM identity_verifications WHERE user_id='$USER_ID' ORDER BY submitted_at DESC LIMIT 1")
+          USER_ID="$USER_ID" INQUIRY_ID="$INQUIRY_ID" node -e '
+            const fs=require("node:fs");
+            const payload={data:{type:"event",id:"evt_persona_declined",attributes:{name:"inquiry.declined",payload:{data:{type:"inquiry",id:process.env.INQUIRY_ID,attributes:{status:"declined","reference-id":process.env.USER_ID}}}}}};
+            fs.writeFileSync("/tmp/declined-event.json",JSON.stringify(payload));'
+          TS=$(date +%s)
+          SIG=$(TS="$TS" node -e 'const fs=require("node:fs"),c=require("node:crypto");const b=fs.readFileSync("/tmp/declined-event.json","utf8");process.stdout.write(c.createHmac("sha256","persona-ci-webhook-secret").update(`${process.env.TS}.${b}`).digest("hex"))')
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/verification/webhooks/persona \
+            -H 'Content-Type: application/json' -H "Persona-Signature: t=$TS,v1=$SIG" --data-binary @/tmp/declined-event.json >/tmp/declined-response.json
+          node -e 'const d=require("/tmp/declined-response.json"); if(!d.ok || d.outcome!=="APPLIED_REJECTED" || d.verificationStatus!=="REJECTED") process.exit(1)'
+          test "$(psql "$DATABASE_URL" -Atc "SELECT verification_status FROM users WHERE email='declined-ci@example.com'")" = "REJECTED"
+
+      - name: Provider outage falls back to Manual Admin Review
+        run: |
+          kill "$(cat /tmp/persona-mock.pid)"
+          sleep 1
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register \
+            -H 'Content-Type: application/json' \
+            --data '{"displayName":"Fallback User","email":"fallback-ci@example.com","password":"fallback-password-123"}' >/tmp/fallback-register.json
+          curl --fail --silent -c /tmp/fallback-cookies.txt -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"fallback-ci@example.com","password":"fallback-password-123"}' >/tmp/fallback-login.json
+          code=$(curl --silent --output /tmp/fallback-start.json --write-out "%{http_code}" -b /tmp/fallback-cookies.txt -X POST http://127.0.0.1:3000/api/verification \
+            -H 'Content-Type: application/json' --data '{"consent":true}')
+          test "$code" = "201"
+          node -e 'const d=require("/tmp/fallback-start.json"); if(!d.ok || d.mode!=="MANUAL_ADMIN" || d.fallbackReason!=="PERSONA_START_FAILED" || d.verification.provider!=="MANUAL_ADMIN" || d.verification.status!=="PENDING") process.exit(1)'
+          test "$(psql "$DATABASE_URL" -Atc "SELECT verification_status FROM users WHERE email='fallback-ci@example.com'")" = "PENDING"
+
+      - name: Superadmin can approve provider fallback
+        run: |
+          curl --fail --silent -c /tmp/provider-admin-cookies.txt -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"superadmin.provider-ci@example.com","password":"provider-ci-superadmin-password"}' >/tmp/provider-admin-login.json
+          curl --fail --silent -b /tmp/provider-admin-cookies.txt http://127.0.0.1:3000/api/admin/verifications >/tmp/provider-admin-queue.json
+          node -e 'const d=require("/tmp/provider-admin-queue.json"); const r=d.requests.find(x=>x.email==="fallback-ci@example.com"&&x.status==="PENDING"&&x.provider==="MANUAL_ADMIN"); if(!r) process.exit(1); require("node:fs").writeFileSync("/tmp/fallback-request-id",r.id)'
+          REQUEST_ID=$(cat /tmp/fallback-request-id)
+          curl --fail --silent -b /tmp/provider-admin-cookies.txt -X PATCH "http://127.0.0.1:3000/api/admin/verifications/$REQUEST_ID" \
+            -H 'Content-Type: application/json' --data '{"decision":"VERIFIED"}' >/tmp/fallback-verified.json
+          test "$(psql "$DATABASE_URL" -Atc "SELECT verification_status FROM users WHERE email='fallback-ci@example.com'")" = "VERIFIED"
+          curl --fail --silent -b /tmp/fallback-cookies.txt http://127.0.0.1:3000/api/rental/access >/tmp/fallback-rental-access.json
+
+      - name: Verify app stores no raw KYC images or webhook payload
+        run: |
+          test "$(psql "$DATABASE_URL" -Atc "SELECT COUNT(*) FROM identity_verifications WHERE metadata::text ILIKE '%image%' AND metadata::text NOT ILIKE '%rawIdentityStored%' AND metadata::text NOT ILIKE '%rawBiometricStored%'")" = "0"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT COUNT(*) FROM admin_audit_logs WHERE action='KYC_PROVIDER_EVENT' AND (details ? 'payload' OR details ? 'fields')")" = "0"
+
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          cat /tmp/rental-persona-next.log || true
+          cat /tmp/persona-mock.log || true
