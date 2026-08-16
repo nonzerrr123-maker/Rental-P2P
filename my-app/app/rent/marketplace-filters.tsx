@@ -34,7 +34,7 @@ export function MarketplaceFilters({
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState("");
 
-  const useCurrentLocation = (radiusKm: number) => {
+  const requestCurrentLocation = (radiusKm: number) => {
     if (!navigator.geolocation) {
       setLocationError("เบราว์เซอร์นี้ไม่รองรับการระบุตำแหน่ง");
       return;
@@ -180,7 +180,7 @@ export function MarketplaceFilters({
                   key={radius}
                   type="button"
                   disabled={locating}
-                  onClick={() => useCurrentLocation(radius)}
+                  onClick={() => requestCurrentLocation(radius)}
                   className={`rounded-full border px-4 py-2 text-xs font-bold transition hover:border-[#c9a227] disabled:opacity-50 ${initial.radiusKm === radius ? "border-neutral-900 bg-neutral-900 text-white" : "bg-white"}`}
                 >
                   {locating ? "กำลังหาตำแหน่ง..." : `ภายใน ${radius} กม.`}
