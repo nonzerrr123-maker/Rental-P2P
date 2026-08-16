@@ -134,7 +134,7 @@ jobs:
           node -e 'const d=require("/tmp/listing-created.json"); if(!d.ok || d.item.title!=="Sony A7III" || d.item.status!=="ACTIVE" || !d.item.urgentEnabled) process.exit(1); require("fs").writeFileSync("/tmp/listing-id",d.item.id); require("fs").writeFileSync("/tmp/response-owner-id",d.item.ownerId)'
           test "$(cat /tmp/response-owner-id)" = "$(cat /tmp/listing-user-id)"
           test "$(psql "$DATABASE_URL" -Atc "SELECT owner_id FROM rental_items WHERE id='$(cat /tmp/listing-id)'")" = "$(cat /tmp/listing-user-id)"
-          test "$(psql "$DATABASE_URL" -Atc "SELECT hourly_rate || '|' || daily_rate || '|' || minimum_hours || '|' || urgent_enabled || '|' || province FROM rental_items WHERE id='$(cat /tmp/listing-id)'")" = "80.00|650.00|2|t|ชลบุรี"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT hourly_rate || '|' || daily_rate || '|' || minimum_hours || '|' || urgent_enabled || '|' || province FROM rental_items WHERE id='$(cat /tmp/listing-id)'")" = "80.00|650.00|2|true|ชลบุรี"
 
       - name: Owner endpoint returns only current users listings
         run: |
