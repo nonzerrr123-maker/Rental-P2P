@@ -1,0 +1,159 @@
+name: Authorization integration check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/**"
+      - ".github/workflows/authorization-integration-check.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "my-app/**"
+      - ".github/workflows/authorization-integration-check.yml"
+
+jobs:
+  validate-authorization:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: p2p_rental
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d p2p_rental"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/p2p_rental
+      DATABASE_POOL_MAX: 5
+      ADMIN_EMAIL: superadmin.authz-ci@example.com
+      ADMIN_PASSWORD: authz-ci-superadmin-password
+      NEXT_TELEMETRY_DISABLED: 1
+
+    defaults:
+      run:
+        working-directory: my-app
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply PostgreSQL schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+
+      - name: Lint authorization scope
+        run: >-
+          npx eslint
+          lib/auth/authorization.ts
+          app/api/admin/me/route.ts
+          app/api/rental/access/route.ts
+          app/admin/layout.tsx
+          app/lend/layout.tsx
+          app/dashboard/layout.tsx
+          app/chat/layout.tsx
+          app/notifications/layout.tsx
+          app/verification/layout.tsx
+          components/auth-nav-actions.tsx
+          app/login/page.tsx
+          app/admin/page.tsx
+          app/page.tsx
+          lib/mock-db.ts
+          lib/nosql/schema.ts
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start application
+        run: |
+          nohup npm run start -- -p 3000 > /tmp/rental-authz-next.log 2>&1 &
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/api/health/db >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/rental-authz-next.log
+          exit 1
+
+      - name: Guest access matrix
+        run: |
+          code=$(curl --silent --output /tmp/guest-rental.json --write-out "%{http_code}" http://127.0.0.1:3000/api/rental/access)
+          test "$code" = "401"
+          code=$(curl --silent --output /tmp/guest-admin.json --write-out "%{http_code}" http://127.0.0.1:3000/api/admin/me)
+          test "$code" = "401"
+          code=$(curl --silent --output /dev/null --dump-header /tmp/guest-dashboard.headers --write-out "%{http_code}" http://127.0.0.1:3000/dashboard)
+          test "$code" = "307"
+          grep -i '^location: /login?next=%2Fdashboard' /tmp/guest-dashboard.headers
+
+      - name: Create and login unverified user
+        run: |
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register \
+            -H 'Content-Type: application/json' \
+            --data '{"displayName":"AuthZ User","email":"authz-ci@example.com","password":"correct-horse-123"}' >/tmp/authz-register.json
+          curl --fail --silent -c /tmp/user-cookies.txt -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"authz-ci@example.com","password":"correct-horse-123"}' >/tmp/authz-login.json
+
+      - name: Unverified user access matrix
+        run: |
+          code=$(curl --silent --output /tmp/unverified-rental.json --write-out "%{http_code}" -b /tmp/user-cookies.txt http://127.0.0.1:3000/api/rental/access)
+          test "$code" = "403"
+          node -e 'const d=require("/tmp/unverified-rental.json"); if(d.code!=="VERIFICATION_REQUIRED") process.exit(1)'
+
+          code=$(curl --silent --output /tmp/user-admin.json --write-out "%{http_code}" -b /tmp/user-cookies.txt http://127.0.0.1:3000/api/admin/me)
+          test "$code" = "403"
+
+          code=$(curl --silent --output /dev/null --dump-header /tmp/unverified-lend.headers --write-out "%{http_code}" -b /tmp/user-cookies.txt http://127.0.0.1:3000/lend)
+          test "$code" = "307"
+          grep -i '^location: /verification' /tmp/unverified-lend.headers
+
+          code=$(curl --silent --output /dev/null --dump-header /tmp/user-admin-page.headers --write-out "%{http_code}" -b /tmp/user-cookies.txt http://127.0.0.1:3000/admin)
+          test "$code" = "307"
+          grep -i '^location: /' /tmp/user-admin-page.headers
+
+          curl --fail --silent -b /tmp/user-cookies.txt http://127.0.0.1:3000/dashboard >/dev/null
+
+      - name: Verified user receives rental access
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE users SET verification_status='VERIFIED' WHERE email='authz-ci@example.com'"
+          curl --fail --silent -b /tmp/user-cookies.txt http://127.0.0.1:3000/api/rental/access >/tmp/verified-rental.json
+          node -e 'const d=require("/tmp/verified-rental.json"); if(!d.ok || d.user.verificationStatus!=="VERIFIED") process.exit(1)'
+          curl --fail --silent -b /tmp/user-cookies.txt http://127.0.0.1:3000/lend >/dev/null
+
+      - name: Superadmin receives admin and rental access
+        run: |
+          curl --fail --silent -c /tmp/admin-cookies.txt -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"superadmin.authz-ci@example.com","password":"authz-ci-superadmin-password"}' >/tmp/admin-login.json
+          curl --fail --silent -b /tmp/admin-cookies.txt http://127.0.0.1:3000/api/admin/me >/tmp/admin-me.json
+          node -e 'const d=require("/tmp/admin-me.json"); if(!d.ok || d.user.role!=="SUPERADMIN") process.exit(1)'
+          curl --fail --silent -b /tmp/admin-cookies.txt http://127.0.0.1:3000/api/rental/access >/dev/null
+          curl --fail --silent -b /tmp/admin-cookies.txt http://127.0.0.1:3000/admin >/dev/null
+          curl --fail --silent -b /tmp/admin-cookies.txt http://127.0.0.1:3000/lend >/dev/null
+
+      - name: Disabled user session is rejected
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE users SET is_active=false WHERE email='authz-ci@example.com'"
+          code=$(curl --silent --output /tmp/disabled-me.json --write-out "%{http_code}" -b /tmp/user-cookies.txt http://127.0.0.1:3000/api/auth/me)
+          test "$code" = "401"
+
+      - name: Show Next.js log on failure
+        if: failure()
+        run: cat /tmp/rental-authz-next.log || true
