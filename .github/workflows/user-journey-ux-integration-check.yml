@@ -1,0 +1,174 @@
+name: User journey UX integration check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/**"
+      - ".github/workflows/user-journey-ux-integration-check.yml"
+  push:
+    branches: [main]
+    paths:
+      - "my-app/**"
+      - ".github/workflows/user-journey-ux-integration-check.yml"
+
+jobs:
+  validate-user-journey-ux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: p2p_rental
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d p2p_rental"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/p2p_rental
+      DATABASE_POOL_MAX: 6
+      KYC_PROVIDER: manual
+      NEXT_TELEMETRY_DISABLED: 1
+    defaults:
+      run:
+        working-directory: my-app
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Apply PostgreSQL schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+      - name: Seed public rental fixture
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO users (id,email,password_hash,display_name,verification_status,rating_average,rating_count)
+          VALUES ('51000000-0000-4000-8000-000000000001','journey-owner@example.com','not-a-login-hash','Journey Owner','VERIFIED',4.80,12);
+          INSERT INTO rental_items (id,owner_id,title,category,description,condition,hourly_rate,daily_rate,minimum_hours,deposit_amount,urgent_enabled,province,district,subdistrict)
+          VALUES ('52000000-0000-4000-8000-000000000001','51000000-0000-4000-8000-000000000001','Journey Test Camera','กล้อง','กล้องจริงสำหรับทดสอบหน้ารายละเอียดและ responsive booking','GOOD',80,600,2,1500,true,'ชลบุรี','เมืองชลบุรี','แสนสุข');
+          SQL
+      - name: Lint task21 scope
+        run: >-
+          npx eslint
+          components/ui/icons.tsx
+          components/rental-lifecycle-stepper.tsx
+          app/login/page.tsx
+          app/register/page.tsx
+          app/verification/page.tsx
+          app/profile/page.tsx
+          app/rent/[id]/page.tsx
+          app/rent/[id]/booking-form.tsx
+          app/rent/[id]/urgent-booking-form.tsx
+          app/dashboard/rental-dashboard.tsx
+          app/chat/chat-client.tsx
+          app/notifications/page.tsx
+          app/checkout/[rentalRequestId]/checkout-client.tsx
+          app/community/page.tsx
+          app/community/new/page.tsx
+          app/community/[id]/page.tsx
+          app/community/[id]/community-actions.tsx
+          app/lend/lend-form.tsx
+          app/lend/urgent-listing-manager.tsx
+          app/rental/[id]/rental-fulfillment-client.tsx
+          app/review/review-client.tsx
+          app/dispute/dispute-client.tsx
+          app/admin/layout.tsx
+          app/admin/page.tsx
+      - name: Build application
+        run: npm run build
+      - name: Start application
+        run: |
+          nohup npm run start -- -p 3000 > /tmp/user-journey-next.log 2>&1 &
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/api/health/db >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/user-journey-next.log
+          exit 1
+      - name: Public entry and item detail use refined product shell
+        run: |
+          curl --fail --silent http://127.0.0.1:3000/login >/tmp/ux-login.html
+          curl --fail --silent http://127.0.0.1:3000/register >/tmp/ux-register.html
+          curl --fail --silent http://127.0.0.1:3000/rent/52000000-0000-4000-8000-000000000001 >/tmp/ux-detail.html
+          grep -q 'ยินดีต้อนรับกลับ' /tmp/ux-login.html
+          grep -q 'เริ่มใช้ Borow Borow' /tmp/ux-register.html
+          grep -q 'Journey Test Camera' /tmp/ux-detail.html
+          grep -q 'Rental options' /tmp/ux-detail.html
+          ! grep -q '📦\|📍\|⚡\|⭐' /tmp/ux-detail.html
+      - name: Create and verify a real user session
+        run: |
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register \
+            -H 'Content-Type: application/json' \
+            --data '{"displayName":"Journey User","email":"journey-user@example.com","password":"journey-pass-123"}' >/tmp/ux-register-user.json
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE users SET verification_status='VERIFIED' WHERE email='journey-user@example.com';"
+          curl --fail --silent -c /tmp/ux-user.cookies -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"journey-user@example.com","password":"journey-pass-123"}' >/tmp/ux-login-user.json
+          node -e "const d=require('/tmp/ux-login-user.json');if(!d.ok||d.user.verificationStatus!=='VERIFIED')process.exit(1)"
+      - name: Authenticated app surfaces render with real session
+        run: |
+          for path in profile dashboard lend chat notifications verification; do
+            curl --fail --silent -b /tmp/ux-user.cookies "http://127.0.0.1:3000/$path" > "/tmp/ux-$path.html"
+          done
+          grep -q 'Journey User' /tmp/ux-profile.html
+          grep -q 'Rental Dashboard\|My rentals\|สวัสดี Journey User' /tmp/ux-dashboard.html
+          grep -q 'ลงของให้คนอื่นยืม' /tmp/ux-lend.html
+          grep -q 'แชตการยืม' /tmp/ux-chat.html
+          grep -q 'การแจ้งเตือน' /tmp/ux-notifications.html
+          grep -q 'ยืนยันตัวตนแล้ว' /tmp/ux-verification.html
+      - name: Profile statistics come from PostgreSQL
+        run: |
+          user_id=$(psql "$DATABASE_URL" -Atc "SELECT id FROM users WHERE email='journey-user@example.com'")
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "INSERT INTO community_requests (requester_id,title,category,province,needed_starts_at,needed_ends_at) VALUES ('$user_id','Journey Community Request','กล้อง','ชลบุรี',now()+interval '2 days',now()+interval '2 days 2 hours');"
+          curl --fail --silent -b /tmp/ux-user.cookies http://127.0.0.1:3000/profile >/tmp/ux-profile-counts.html
+          grep -q 'โพสต์คอมมู' /tmp/ux-profile-counts.html
+          grep -q '>1<' /tmp/ux-profile-counts.html
+      - name: Admin workspace shares the same product shell
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE users SET role='ADMIN' WHERE email='journey-user@example.com';"
+          curl --fail --silent -b /tmp/ux-user.cookies http://127.0.0.1:3000/admin >/tmp/ux-admin.html
+          grep -q 'Borow Borow admin' /tmp/ux-admin.html
+          grep -q 'Verification workspace' /tmp/ux-admin.html
+          grep -q 'Admin workspace' /tmp/ux-admin.html
+          ! grep -q 'Rental-P2P Admin\|TASK 7' /tmp/ux-admin.html
+      - name: Responsive and SVG UX markers are present
+        run: |
+          grep -q 'snap-x' app/rent/[id]/page.tsx
+          grep -q '100dvh' app/chat/chat-client.tsx
+          grep -q 'RentalLifecycleStepper' app/dashboard/rental-dashboard.tsx
+          grep -q 'RentalLifecycleStepper' app/rental/[id]/rental-fulfillment-client.tsx
+          grep -q 'SiteHeader' app/lend/lend-form.tsx
+          grep -q 'SiteHeader' app/checkout/[rentalRequestId]/checkout-client.tsx
+          grep -q 'CreditCardIcon' components/ui/icons.tsx
+          grep -q 'SendIcon' components/ui/icons.tsx
+      - name: Polished task21 source has no prototype emoji iconography
+        run: |
+          files=(
+            app/login/page.tsx app/register/page.tsx app/verification/page.tsx
+            app/rent/[id]/page.tsx app/rent/[id]/booking-form.tsx app/rent/[id]/urgent-booking-form.tsx
+            app/dashboard/rental-dashboard.tsx app/chat/chat-client.tsx app/notifications/page.tsx
+            app/checkout/[rentalRequestId]/checkout-client.tsx app/community/page.tsx
+            app/community/[id]/page.tsx app/community/[id]/community-actions.tsx
+            app/lend/lend-form.tsx app/lend/urgent-listing-manager.tsx
+            app/rental/[id]/rental-fulfillment-client.tsx app/review/review-client.tsx app/dispute/dispute-client.tsx
+            app/admin/page.tsx
+          )
+          if grep -nE '⚡|📍|💬|🔔|🎉|📦|🔒|🔐' "${files[@]}"; then
+            echo 'Prototype emoji iconography remains in polished scope'
+            exit 1
+          fi
+      - name: Show Next.js log on failure
+        if: failure()
+        run: cat /tmp/user-journey-next.log || true
