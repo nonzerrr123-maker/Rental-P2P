@@ -14,22 +14,26 @@ export default function ActivityNavLinks({ compact = false }: { compact?: boolea
 
   useEffect(() => {
     let active = true;
-    const refresh = async () => {
-      if (document.hidden) return;
-      try {
-        const response = await fetch("/api/activity/summary", { cache: "no-store" });
-        if (!response.ok) return;
-        const payload = await response.json();
-        if (!active || !payload.ok) return;
-        setChatUnread(Number(payload.chatUnread || 0));
-        setNotificationUnread(Number(payload.notificationUnread || 0));
-      } catch {
-        // Badges are supplemental navigation; temporary polling failures stay silent.
-      }
+    const applyPayload = (payload: { ok?: boolean; chatUnread?: number; notificationUnread?: number }) => {
+      if (!active || !payload.ok) return;
+      setChatUnread(Number(payload.chatUnread || 0));
+      setNotificationUnread(Number(payload.notificationUnread || 0));
     };
-    void refresh();
-    const interval = window.setInterval(() => void refresh(), 5000);
-    const onVisibility = () => { if (!document.hidden) void refresh(); };
+    const refresh = () => {
+      if (document.hidden) return;
+      fetch("/api/activity/summary", { cache: "no-store" })
+        .then(async (response) => (response.ok ? response.json() : null))
+        .then((payload) => { if (payload) applyPayload(payload); })
+        .catch(() => undefined);
+    };
+
+    fetch("/api/activity/summary", { cache: "no-store" })
+      .then(async (response) => (response.ok ? response.json() : null))
+      .then((payload) => { if (payload) applyPayload(payload); })
+      .catch(() => undefined);
+
+    const interval = window.setInterval(refresh, 5000);
+    const onVisibility = () => { if (!document.hidden) refresh(); };
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       active = false;
