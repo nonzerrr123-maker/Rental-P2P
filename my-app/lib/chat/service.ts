@@ -256,26 +256,36 @@ export async function listMessages(
     }
     const requestedLimit = Number.isFinite(options.limit) ? Math.trunc(options.limit as number) : 50;
     const safeLimit = Math.min(Math.max(requestedLimit, 1), 100);
-    let cursorCreatedAt: Date | null = null;
     let cursorId: string | null = null;
     if (options.before || options.after) {
       cursorId = requireUuid(options.before ?? options.after, "cursor");
-      const cursor = await client.query<{ created_at: Date } & QueryResultRow>(
-        `SELECT created_at FROM messages WHERE id = $1 AND conversation_id = $2 LIMIT 1`,
+      const cursor = await client.query(
+        `SELECT 1 FROM messages WHERE id = $1 AND conversation_id = $2 LIMIT 1`,
         [cursorId, access.id],
       );
       if (!cursor.rows[0]) throw new ChatError(400, "VALIDATION_ERROR", "Message cursor is invalid");
-      cursorCreatedAt = cursor.rows[0].created_at;
     }
 
     const isAfter = Boolean(options.after);
-    const condition = cursorCreatedAt && cursorId
+    const condition = cursorId
       ? isAfter
-        ? "AND (m.created_at, m.id) > ($2::timestamptz, $3::uuid)"
-        : "AND (m.created_at, m.id) < ($2::timestamptz, $3::uuid)"
+        ? `AND EXISTS (
+             SELECT 1
+             FROM messages cursor_message
+             WHERE cursor_message.id = $2
+               AND cursor_message.conversation_id = $1
+               AND (m.created_at, m.id) > (cursor_message.created_at, cursor_message.id)
+           )`
+        : `AND EXISTS (
+             SELECT 1
+             FROM messages cursor_message
+             WHERE cursor_message.id = $2
+               AND cursor_message.conversation_id = $1
+               AND (m.created_at, m.id) < (cursor_message.created_at, cursor_message.id)
+           )`
       : "";
     const values: unknown[] = [access.id];
-    if (cursorCreatedAt && cursorId) values.push(cursorCreatedAt.toISOString(), cursorId);
+    if (cursorId) values.push(cursorId);
     values.push(safeLimit + 1);
     const limitIndex = values.length;
     const result = await client.query<MessageRow>(
