@@ -140,22 +140,29 @@ jobs:
         run: |
           conversation_id=$(cat /tmp/chat-conversation-id)
           curl --fail --silent -b /tmp/chat-owner.txt http://127.0.0.1:3000/api/activity/summary >/tmp/chat-owner-activity.json
+          echo "owner activity: $(cat /tmp/chat-owner-activity.json)"
           node -e 'const d=require("/tmp/chat-owner-activity.json"); if(d.chatUnread!==1 || d.notificationUnread<2)process.exit(1)'
           curl --fail --silent -b /tmp/chat-owner.txt "http://127.0.0.1:3000/api/conversations/$conversation_id/messages?limit=1" >/tmp/chat-owner-messages.json
+          echo "owner messages: $(cat /tmp/chat-owner-messages.json)"
           node -e 'const d=require("/tmp/chat-owner-messages.json"); if(d.items.length!==1)process.exit(1)'
           curl --fail --silent -b /tmp/chat-owner.txt -X POST "http://127.0.0.1:3000/api/conversations/$conversation_id/read" >/dev/null
           curl --fail --silent -b /tmp/chat-owner.txt http://127.0.0.1:3000/api/activity/summary >/tmp/chat-owner-read-activity.json
+          echo "owner activity after read: $(cat /tmp/chat-owner-read-activity.json)"
           node -e 'const d=require("/tmp/chat-owner-read-activity.json"); if(d.chatUnread!==0)process.exit(1)'
           first_id=$(cat /tmp/chat-first-message-id)
           curl --fail --silent -b /tmp/chat-owner.txt -X POST "http://127.0.0.1:3000/api/conversations/$conversation_id/messages" -H 'Content-Type: application/json' --data '{"body":"เจอกันหน้าห้างช่วงสิบโมงได้ครับ"}' >/tmp/chat-reply.json
+          echo "reply: $(cat /tmp/chat-reply.json)"
           node -e 'const d=require("/tmp/chat-reply.json"); if(!d.ok)process.exit(1); require("fs").writeFileSync("/tmp/chat-reply-id",d.message.id)'
           curl --fail --silent -b /tmp/chat-borrower.txt "http://127.0.0.1:3000/api/conversations/$conversation_id/messages?after=$first_id&limit=10" >/tmp/chat-after.json
+          echo "after cursor: $(cat /tmp/chat-after.json)"
           node -e 'const d=require("/tmp/chat-after.json"); if(d.items.length!==1 || d.items[0].body!=="เจอกันหน้าห้างช่วงสิบโมงได้ครับ")process.exit(1)'
           curl --fail --silent -b /tmp/chat-borrower.txt -X POST "http://127.0.0.1:3000/api/conversations/$conversation_id/read" >/dev/null
           curl --fail --silent -b /tmp/chat-owner.txt "http://127.0.0.1:3000/api/conversations/$conversation_id/messages?limit=10" >/tmp/chat-receipt.json
+          echo "receipt: $(cat /tmp/chat-receipt.json)"
           node -e 'const d=require("/tmp/chat-receipt.json"); const m=d.items.find(x=>x.id===require("fs").readFileSync("/tmp/chat-reply-id","utf8")); if(!m?.readByOtherAt)process.exit(1)'
           reply_id=$(cat /tmp/chat-reply-id)
           curl --fail --silent -b /tmp/chat-owner.txt "http://127.0.0.1:3000/api/conversations/$conversation_id/messages?before=$reply_id&limit=1" >/tmp/chat-before.json
+          echo "before cursor: $(cat /tmp/chat-before.json)"
           node -e 'const d=require("/tmp/chat-before.json"); if(d.items.length!==1 || d.items[0].id!==require("fs").readFileSync("/tmp/chat-first-message-id","utf8"))process.exit(1)'
 
       - name: Enforce notification ownership and idempotency
