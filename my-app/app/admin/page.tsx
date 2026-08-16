@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 type RequestStatus = "PENDING" | "VERIFIED" | "REJECTED";
 
@@ -23,6 +23,44 @@ type QueueCounts = {
   rejected: number;
 };
 
+type QueueData = {
+  counts: QueueCounts;
+  requests: VerificationRequest[];
+};
+
+async function fetchQueueData(): Promise<QueueData> {
+  const response = await fetch("/api/admin/verifications", { cache: "no-store" });
+  const result = await response.json();
+  if (!response.ok || !result.ok) {
+    throw new Error(result.message ?? "ไม่สามารถโหลดคิว Verification ได้");
+  }
+
+  return {
+    counts: result.counts,
+    requests: result.requests.map((request: {
+      id: string;
+      userId: string;
+      email: string;
+      displayName: string;
+      provider: string;
+      submittedAt: string;
+      reviewedAt: string | null;
+      status: RequestStatus;
+      rejectionReason: string | null;
+    }) => ({
+      id: request.id,
+      userId: request.userId,
+      name: request.displayName,
+      email: request.email,
+      provider: request.provider,
+      submittedAt: request.submittedAt,
+      reviewedAt: request.reviewedAt,
+      status: request.status,
+      rejectionReason: request.rejectionReason,
+    })),
+  };
+}
+
 export default function AdminPage() {
   const [requests, setRequests] = useState<VerificationRequest[]>([]);
   const [counts, setCounts] = useState<QueueCounts>({ pending: 0, verified: 0, rejected: 0 });
@@ -31,51 +69,43 @@ export default function AdminPage() {
   const [workingId, setWorkingId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
 
-  const loadQueue = useCallback(async () => {
+  const applyQueue = (data: QueueData) => {
+    setCounts(data.counts);
+    setRequests(data.requests);
+  };
+
+  const loadQueue = async () => {
     setLoading(true);
     try {
-      const response = await fetch("/api/admin/verifications", { cache: "no-store" });
-      const result = await response.json();
-      if (!response.ok || !result.ok) {
-        setMessage(result.message ?? "ไม่สามารถโหลดคิว Verification ได้");
-        return;
-      }
-
-      setCounts(result.counts);
-      setRequests(
-        result.requests.map((request: {
-          id: string;
-          userId: string;
-          email: string;
-          displayName: string;
-          provider: string;
-          submittedAt: string;
-          reviewedAt: string | null;
-          status: RequestStatus;
-          rejectionReason: string | null;
-        }) => ({
-          id: request.id,
-          userId: request.userId,
-          name: request.displayName,
-          email: request.email,
-          provider: request.provider,
-          submittedAt: request.submittedAt,
-          reviewedAt: request.reviewedAt,
-          status: request.status,
-          rejectionReason: request.rejectionReason,
-        })),
-      );
+      applyQueue(await fetchQueueData());
       setMessage("");
-    } catch {
-      setMessage("ไม่สามารถเชื่อมต่อ Verification API ได้");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "ไม่สามารถเชื่อมต่อ Verification API ได้");
     } finally {
       setLoading(false);
     }
-  }, []);
+  };
 
   useEffect(() => {
-    void loadQueue();
-  }, [loadQueue]);
+    let active = true;
+    void fetchQueueData()
+      .then((data) => {
+        if (!active) return;
+        setCounts(data.counts);
+        setRequests(data.requests);
+        setMessage("");
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setMessage(error instanceof Error ? error.message : "ไม่สามารถเชื่อมต่อ Verification API ได้");
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const review = async (id: string, decision: "VERIFIED" | "REJECTED") => {
     const rejectionReason = rejectionReasons[id]?.trim();
