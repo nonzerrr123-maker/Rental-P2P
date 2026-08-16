@@ -1,50 +1,161 @@
 "use client";
 
-import { useState } from "react";
+import Link from "next/link";
+import { useEffect, useState } from "react";
+
+type VerificationStatus = "UNVERIFIED" | "PENDING" | "VERIFIED" | "REJECTED";
+
+type VerificationRecord = {
+  id: string;
+  provider: string;
+  status: Exclude<VerificationStatus, "UNVERIFIED">;
+  submittedAt: string;
+  reviewedAt: string | null;
+  rejectionReason: string | null;
+};
+
+type VerificationOverview = {
+  verificationStatus: VerificationStatus;
+  latest: VerificationRecord | null;
+};
+
+async function fetchOverview(): Promise<VerificationOverview> {
+  const response = await fetch("/api/verification", { cache: "no-store" });
+  const result = await response.json();
+  if (!response.ok || !result.ok) {
+    throw new Error(result.message ?? "ไม่สามารถโหลดสถานะการยืนยันตัวตนได้");
+  }
+  return {
+    verificationStatus: result.verificationStatus,
+    latest: result.latest,
+  };
+}
 
 export default function VerificationPage() {
-  const [step, setStep] = useState(1);
-  const [submitted, setSubmitted] = useState(false);
+  const [overview, setOverview] = useState<VerificationOverview | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [message, setMessage] = useState("");
+
+  const loadOverview = async () => {
+    setLoading(true);
+    try {
+      setOverview(await fetchOverview());
+      setMessage("");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "ไม่สามารถเชื่อมต่อระบบยืนยันตัวตนได้");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    let active = true;
+    void fetchOverview()
+      .then((nextOverview) => {
+        if (!active) return;
+        setOverview(nextOverview);
+        setMessage("");
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setMessage(error instanceof Error ? error.message : "ไม่สามารถเชื่อมต่อระบบยืนยันตัวตนได้");
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const submit = async () => {
+    setSubmitting(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/verification", { method: "POST" });
+      const result = await response.json();
+      if (!response.ok || !result.ok) {
+        setMessage(result.message ?? "ส่งคำขอยืนยันตัวตนไม่สำเร็จ");
+        return;
+      }
+      await loadOverview();
+    } catch {
+      setMessage("ไม่สามารถส่งคำขอยืนยันตัวตนได้");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const status = overview?.verificationStatus;
+  const latest = overview?.latest;
 
   return (
-    <main className="min-h-screen bg-gray-50 px-6 py-16 text-black">
-      <div className="mx-auto max-w-2xl rounded-2xl border bg-white p-8 shadow-sm md:p-10">
+    <main className="min-h-screen bg-gray-50 px-5 py-12 text-black sm:px-6 sm:py-16">
+      <div className="mx-auto max-w-2xl rounded-2xl border bg-white p-6 shadow-sm sm:p-8 md:p-10">
         <p className="text-sm font-bold tracking-[3px] text-[#B08D18]">TRUST & SAFETY</p>
         <h1 className="mt-3 text-3xl font-black">ยืนยันตัวตน</h1>
-        <p className="mt-3 leading-7 text-gray-500">เพื่อความปลอดภัยของผู้ให้ยืมและผู้ยืม คุณต้องยืนยันตัวตนก่อนลงของให้ยืมหรือส่งคำขอยืม</p>
+        <p className="mt-3 leading-7 text-gray-500">
+          บัญชีผู้ใช้ต้องผ่านการยืนยันก่อนลงของหรือส่งคำขอยืม ระบบจะใช้สถานะจาก PostgreSQL เป็นแหล่งข้อมูลจริง
+        </p>
 
-        <div className="mt-8 grid grid-cols-2 gap-3 text-sm">
-          <div className={`rounded-lg border p-4 ${step >= 1 ? "border-[#D4AF37] bg-[#fffaf0]" : ""}`}><b>01</b><p className="mt-1">ยืนยันบัตรประชาชน</p></div>
-          <div className={`rounded-lg border p-4 ${step >= 2 ? "border-[#D4AF37] bg-[#fffaf0]" : ""}`}><b>02</b><p className="mt-1">ยืนยันใบหน้า</p></div>
-        </div>
-
-        {!submitted ? (
-          <section className="mt-8 rounded-xl border-2 border-dashed border-gray-300 p-8 text-center">
-            {step === 1 ? (
-              <>
-                <div className="text-5xl">🪪</div>
-                <h2 className="mt-4 text-xl font-bold">เตรียมบัตรประชาชน</h2>
-                <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-gray-500">ขั้นตอนนี้เป็น UX placeholder เท่านั้น การใช้งานจริงควรเชื่อมผู้ให้บริการ KYC ที่รองรับ OCR และตรวจสอบเอกสารอย่างปลอดภัย</p>
-                <button onClick={() => setStep(2)} className="mt-6 rounded-lg bg-black px-6 py-3 font-bold text-white">ดำเนินการต่อ</button>
-              </>
-            ) : (
-              <>
-                <div className="text-5xl">🙂</div>
-                <h2 className="mt-4 text-xl font-bold">เตรียมกล้องสำหรับยืนยันใบหน้า</h2>
-                <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-gray-500">ขั้นตอนจริงควรใช้ liveness detection และ face matching ผ่านผู้ให้บริการที่เหมาะสม ห้ามนำรูปหรือข้อมูลชีวมิติไปเก็บในฐานข้อมูลแอปโดยตรง</p>
-                <button onClick={() => setSubmitted(true)} className="mt-6 rounded-lg bg-[#D4AF37] px-6 py-3 font-bold text-black">ส่งคำขอยืนยัน</button>
-              </>
+        {loading ? (
+          <div className="mt-8 rounded-xl border bg-gray-50 p-8 text-center text-gray-500">กำลังโหลดสถานะ...</div>
+        ) : status === "VERIFIED" ? (
+          <section className="mt-8 rounded-xl border border-green-200 bg-green-50 p-8 text-center">
+            <div className="text-5xl">✅</div>
+            <h2 className="mt-4 text-xl font-black text-green-900">ยืนยันตัวตนแล้ว</h2>
+            <p className="mt-2 text-sm leading-6 text-green-800">บัญชีนี้สามารถลงของและส่งคำขอยืมได้แล้ว</p>
+            <div className="mt-6 flex flex-wrap justify-center gap-3">
+              <Link href="/rent" className="rounded-lg border border-green-300 bg-white px-5 py-3 font-bold">ค้นหาของ</Link>
+              <Link href="/lend" className="rounded-lg bg-black px-5 py-3 font-bold text-white">ลงของให้ยืม</Link>
+            </div>
+          </section>
+        ) : status === "PENDING" ? (
+          <section className="mt-8 rounded-xl border border-[#D4AF37] bg-[#fffaf0] p-8 text-center">
+            <div className="text-5xl">⏳</div>
+            <h2 className="mt-4 text-xl font-black">กำลังรอตรวจสอบ</h2>
+            <p className="mt-2 text-sm leading-6 text-gray-600">
+              คำขออยู่ในสถานะ <b>PENDING</b> และไม่สามารถส่งซ้ำได้จนกว่า Admin จะตรวจเสร็จ
+            </p>
+            {latest?.submittedAt && (
+              <p className="mt-3 text-xs text-gray-500">ส่งเมื่อ {new Date(latest.submittedAt).toLocaleString("th-TH")}</p>
             )}
           </section>
         ) : (
-          <section className="mt-8 rounded-xl border border-[#D4AF37] bg-[#fffaf0] p-8 text-center">
-            <div className="text-5xl">⏳</div>
-            <h2 className="mt-4 text-xl font-bold">ส่งคำขอแล้ว</h2>
-            <p className="mt-2 text-sm leading-6 text-gray-600">สถานะของคุณคือ <b>PENDING</b> ระบบจะแจ้งผลเมื่อการตรวจสอบเสร็จสิ้น</p>
+          <section className="mt-8 rounded-xl border border-gray-200 p-6 sm:p-8">
+            {status === "REJECTED" ? (
+              <div className="mb-6 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+                <b>คำขอก่อนหน้าถูกปฏิเสธ</b>
+                <p className="mt-1">{latest?.rejectionReason ?? "กรุณาตรวจสอบข้อมูลและส่งคำขอใหม่"}</p>
+              </div>
+            ) : null}
+
+            <div className="grid gap-4 sm:grid-cols-3">
+              <div className="rounded-xl bg-gray-50 p-4"><b>01</b><p className="mt-2 text-sm">ส่งคำขอ</p></div>
+              <div className="rounded-xl bg-gray-50 p-4"><b>02</b><p className="mt-2 text-sm">Admin ตรวจสอบ</p></div>
+              <div className="rounded-xl bg-gray-50 p-4"><b>03</b><p className="mt-2 text-sm">ปลดล็อกการยืม</p></div>
+            </div>
+
+            <h2 className="mt-7 text-xl font-black">Manual verification workflow</h2>
+            <p className="mt-2 text-sm leading-6 text-gray-500">
+              ในขั้นนี้ระบบจะสร้างคำขอในฐานข้อมูลและส่งให้ Admin/Superadmin ตรวจสอบ โดยยังไม่รับหรือเก็บรูปบัตรประชาชนและข้อมูลใบหน้าในแอป การตรวจเอกสารและ liveness ผ่าน KYC provider จะเชื่อมในขั้นถัดไป
+            </p>
+            <button
+              disabled={submitting}
+              onClick={submit}
+              className="mt-6 w-full rounded-lg bg-[#D4AF37] px-6 py-3.5 font-black text-black disabled:opacity-50"
+            >
+              {submitting ? "กำลังส่งคำขอ..." : status === "REJECTED" ? "ส่งคำขอใหม่" : "ส่งคำขอยืนยันตัวตน"}
+            </button>
           </section>
         )}
 
-        <div className="mt-8 rounded-lg bg-gray-50 p-4 text-xs leading-6 text-gray-500">ความเป็นส่วนตัว: ข้อมูลบัตรประชาชนและข้อมูลใบหน้ามีความอ่อนไหวสูง ระบบจริงควรเก็บเท่าที่จำเป็น ใช้การเข้ารหัส จำกัดสิทธิ์การเข้าถึง กำหนดระยะเวลาการเก็บรักษา และแจ้งรายละเอียดการประมวลผลข้อมูลให้ผู้ใช้ทราบก่อนให้ความยินยอม</div>
+        {message && <p className="mt-5 rounded-lg bg-red-50 p-3 text-sm text-red-700">{message}</p>}
+
+        <div className="mt-8 rounded-lg bg-gray-50 p-4 text-xs leading-6 text-gray-500">
+          ความเป็นส่วนตัว: ฐานข้อมูลแอปจะไม่เก็บภาพบัตรประชาชนหรือข้อมูลชีวมิติแบบ raw การเชื่อม KYC provider จะเก็บเฉพาะ reference และข้อมูล audit ที่จำเป็นเท่านั้น
+        </div>
       </div>
     </main>
   );

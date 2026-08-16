@@ -1,0 +1,162 @@
+name: Verification integration check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/**"
+      - ".github/workflows/verification-integration-check.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "my-app/**"
+      - ".github/workflows/verification-integration-check.yml"
+
+jobs:
+  validate-verification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: p2p_rental
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d p2p_rental"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/p2p_rental
+      DATABASE_POOL_MAX: 5
+      ADMIN_EMAIL: superadmin.kyc-ci@example.com
+      ADMIN_PASSWORD: kyc-ci-superadmin-password
+      NEXT_TELEMETRY_DISABLED: 1
+
+    defaults:
+      run:
+        working-directory: my-app
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply PostgreSQL schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+
+      - name: Lint verification scope
+        run: >-
+          npx eslint
+          lib/verification/service.ts
+          app/api/verification/route.ts
+          app/api/admin/verifications/route.ts
+          app/api/admin/verifications/[id]/route.ts
+          app/verification/page.tsx
+          app/admin/page.tsx
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start application
+        run: |
+          nohup npm run start -- -p 3000 > /tmp/rental-verification-next.log 2>&1 &
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/api/health/db >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/rental-verification-next.log
+          exit 1
+
+      - name: Register and login unverified user
+        run: |
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register \
+            -H 'Content-Type: application/json' \
+            --data '{"displayName":"KYC User","email":"kyc-ci@example.com","password":"correct-horse-123"}' >/tmp/kyc-register.json
+          curl --fail --silent -c /tmp/user-cookies.txt -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"kyc-ci@example.com","password":"correct-horse-123"}' >/tmp/kyc-login.json
+          curl --fail --silent -b /tmp/user-cookies.txt http://127.0.0.1:3000/api/verification >/tmp/kyc-before.json
+          node -e 'const d=require("/tmp/kyc-before.json"); if(!d.ok || d.verificationStatus!=="UNVERIFIED" || d.latest!==null) process.exit(1)'
+
+      - name: Submit verification and reject duplicate pending request
+        run: |
+          code=$(curl --silent --output /tmp/kyc-submit.json --write-out "%{http_code}" -b /tmp/user-cookies.txt -X POST http://127.0.0.1:3000/api/verification)
+          test "$code" = "201"
+          node -e 'const d=require("/tmp/kyc-submit.json"); if(!d.ok || d.verification.status!=="PENDING" || d.verification.provider!=="MANUAL_ADMIN") process.exit(1)'
+
+          code=$(curl --silent --output /tmp/kyc-duplicate.json --write-out "%{http_code}" -b /tmp/user-cookies.txt -X POST http://127.0.0.1:3000/api/verification)
+          test "$code" = "409"
+          node -e 'const d=require("/tmp/kyc-duplicate.json"); if(d.code!=="VERIFICATION_PENDING") process.exit(1)'
+
+          test "$(psql "$DATABASE_URL" -Atc "SELECT verification_status FROM users WHERE email='kyc-ci@example.com'")" = "PENDING"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT COUNT(*) FROM identity_verifications WHERE user_id=(SELECT id FROM users WHERE email='kyc-ci@example.com') AND status='PENDING'")" = "1"
+
+      - name: Normal user cannot review verification queue
+        run: |
+          code=$(curl --silent --output /tmp/user-admin-queue.json --write-out "%{http_code}" -b /tmp/user-cookies.txt http://127.0.0.1:3000/api/admin/verifications)
+          test "$code" = "403"
+
+      - name: Login superadmin and inspect queue
+        run: |
+          curl --fail --silent -c /tmp/admin-cookies.txt -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"superadmin.kyc-ci@example.com","password":"kyc-ci-superadmin-password"}' >/tmp/admin-login.json
+          curl --fail --silent -b /tmp/admin-cookies.txt http://127.0.0.1:3000/api/admin/verifications >/tmp/admin-queue.json
+          node -e 'const d=require("/tmp/admin-queue.json"); if(!d.ok || d.counts.pending!==1 || !d.requests.some(r=>r.email==="kyc-ci@example.com"&&r.status==="PENDING")) process.exit(1)'
+          node -e 'const d=require("/tmp/admin-queue.json"); const r=d.requests.find(x=>x.email==="kyc-ci@example.com"&&x.status==="PENDING"); require("fs").writeFileSync("/tmp/request-id",r.id)'
+
+      - name: Require rejection reason and reject request transactionally
+        run: |
+          id=$(cat /tmp/request-id)
+          code=$(curl --silent --output /tmp/reject-no-reason.json --write-out "%{http_code}" -b /tmp/admin-cookies.txt -X PATCH "http://127.0.0.1:3000/api/admin/verifications/$id" \
+            -H 'Content-Type: application/json' \
+            --data '{"decision":"REJECTED"}')
+          test "$code" = "400"
+
+          curl --fail --silent -b /tmp/admin-cookies.txt -X PATCH "http://127.0.0.1:3000/api/admin/verifications/$id" \
+            -H 'Content-Type: application/json' \
+            --data '{"decision":"REJECTED","rejectionReason":"Document needs another review"}' >/tmp/rejected.json
+          node -e 'const d=require("/tmp/rejected.json"); if(!d.ok || d.verification.status!=="REJECTED") process.exit(1)'
+          test "$(psql "$DATABASE_URL" -Atc "SELECT verification_status FROM users WHERE email='kyc-ci@example.com'")" = "REJECTED"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT COUNT(*) FROM admin_audit_logs WHERE action='REJECT_IDENTITY'")" = "1"
+
+      - name: Resubmit after rejection and verify user
+        run: |
+          code=$(curl --silent --output /tmp/kyc-resubmit.json --write-out "%{http_code}" -b /tmp/user-cookies.txt -X POST http://127.0.0.1:3000/api/verification)
+          test "$code" = "201"
+          node -e 'const d=require("/tmp/kyc-resubmit.json"); if(!d.ok || d.verification.status!=="PENDING") process.exit(1); require("fs").writeFileSync("/tmp/request-id-2",d.verification.id)'
+
+          id=$(cat /tmp/request-id-2)
+          curl --fail --silent -b /tmp/admin-cookies.txt -X PATCH "http://127.0.0.1:3000/api/admin/verifications/$id" \
+            -H 'Content-Type: application/json' \
+            --data '{"decision":"VERIFIED"}' >/tmp/verified.json
+          node -e 'const d=require("/tmp/verified.json"); if(!d.ok || d.verification.status!=="VERIFIED") process.exit(1)'
+          test "$(psql "$DATABASE_URL" -Atc "SELECT verification_status FROM users WHERE email='kyc-ci@example.com'")" = "VERIFIED"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT COUNT(*) FROM admin_audit_logs WHERE action='VERIFY_IDENTITY'")" = "1"
+
+      - name: Verified status unlocks rental authorization immediately
+        run: |
+          curl --fail --silent -b /tmp/user-cookies.txt http://127.0.0.1:3000/api/rental/access >/tmp/rental-access.json
+          node -e 'const d=require("/tmp/rental-access.json"); if(!d.ok || d.user.verificationStatus!=="VERIFIED") process.exit(1)'
+          curl --fail --silent -b /tmp/user-cookies.txt http://127.0.0.1:3000/api/verification >/tmp/kyc-after.json
+          node -e 'const d=require("/tmp/kyc-after.json"); if(!d.ok || d.verificationStatus!=="VERIFIED" || d.latest.status!=="VERIFIED") process.exit(1)'
+
+      - name: Show Next.js log on failure
+        if: failure()
+        run: cat /tmp/rental-verification-next.log || true
