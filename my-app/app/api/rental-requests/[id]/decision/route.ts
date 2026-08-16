@@ -15,6 +15,22 @@ function bookingErrorResponse(error: unknown): NextResponse | null {
   );
 }
 
+function concurrentDecisionResponse(error: unknown): NextResponse | null {
+  const code = error && typeof error === "object" && "code" in error
+    ? (error as { code?: string }).code
+    : undefined;
+  if (code !== "40P01") return null;
+  return NextResponse.json(
+    {
+      ok: false,
+      code: "AVAILABILITY_CONFLICT",
+      message: "Another accepted rental blocks this period",
+      fieldErrors: {},
+    },
+    { status: 409 },
+  );
+}
+
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -41,6 +57,8 @@ export async function POST(
     if (authResponse) return authResponse;
     const bookingResponse = bookingErrorResponse(error);
     if (bookingResponse) return bookingResponse;
+    const concurrentResponse = concurrentDecisionResponse(error);
+    if (concurrentResponse) return concurrentResponse;
     console.error("Failed to decide rental request", error);
     return NextResponse.json(
       { ok: false, code: "INTERNAL_ERROR", message: "Unable to decide rental request" },
