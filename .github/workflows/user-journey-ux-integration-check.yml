@@ -127,7 +127,9 @@ jobs:
           grep -q 'ลงของให้คนอื่นยืม' /tmp/ux-lend.html
           grep -q 'แชตการยืม' /tmp/ux-chat.html
           grep -q 'การแจ้งเตือน' /tmp/ux-notifications.html
-          grep -q 'ยืนยันตัวตนแล้ว' /tmp/ux-verification.html
+          grep -q 'ยืนยันตัวตนก่อนเริ่มยืม' /tmp/ux-verification.html
+          curl --fail --silent -b /tmp/ux-user.cookies http://127.0.0.1:3000/api/verification >/tmp/ux-verification-api.json
+          node -e "const d=require('/tmp/ux-verification-api.json');if(!d.ok||d.verificationStatus!=='VERIFIED')process.exit(1)"
       - name: Profile statistics come from PostgreSQL
         run: |
           user_id=$(psql "$DATABASE_URL" -Atc "SELECT id FROM users WHERE email='journey-user@example.com'")
