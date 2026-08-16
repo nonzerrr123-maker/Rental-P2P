@@ -45,14 +45,15 @@ export default function CommunityActions({
   initialOffers: Offer[];
 }) {
   const router = useRouter();
+  const initialOwnOffer = initialOffers.find((offer) => offer.lenderId === currentUserId);
   const [offers, setOffers] = useState(initialOffers);
   const [mine, setMine] = useState<Mine[]>([]);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState("");
-  const [selectedItemId, setSelectedItemId] = useState("");
-  const [pricingMode, setPricingMode] = useState<"HOUR" | "DAY">("DAY");
-  const [offeredRate, setOfferedRate] = useState("");
-  const [offerMessage, setOfferMessage] = useState("");
+  const [selectedItemId, setSelectedItemId] = useState(initialOwnOffer?.rentalItem?.id ?? "");
+  const [pricingMode, setPricingMode] = useState<"HOUR" | "DAY">(initialOwnOffer?.pricingMode ?? "DAY");
+  const [offeredRate, setOfferedRate] = useState(initialOwnOffer?.offeredRate ?? "");
+  const [offerMessage, setOfferMessage] = useState(initialOwnOffer?.message ?? "");
 
   const ownOffer = useMemo(() => offers.find((offer) => offer.lenderId === currentUserId), [offers, currentUserId]);
   const selectedItem = mine.find((item) => item.id === selectedItemId);
@@ -69,14 +70,6 @@ export default function CommunityActions({
       .catch(() => undefined);
     return () => { active = false; };
   }, [canAct, isRequester, requestStatus]);
-
-  useEffect(() => {
-    if (!ownOffer) return;
-    setSelectedItemId(ownOffer.rentalItem?.id ?? "");
-    setPricingMode(ownOffer.pricingMode ?? "DAY");
-    setOfferedRate(ownOffer.offeredRate ?? "");
-    setOfferMessage(ownOffer.message ?? "");
-  }, [ownOffer?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const refreshOffers = async () => {
     const response = await fetch(`/api/community-requests/${requestId}/offers`, { cache: "no-store" });
@@ -232,7 +225,17 @@ export default function CommunityActions({
 
       <form onSubmit={submitOffer} className="mt-5 grid gap-4">
         <label className="text-sm font-bold">รายการของฉัน
-          <select value={selectedItemId} onChange={(event) => { setSelectedItemId(event.target.value); setOfferedRate(""); }} className="mt-2 w-full rounded-xl border bg-white px-4 py-3 font-normal">
+          <select
+            value={selectedItemId}
+            onChange={(event) => {
+              const nextId = event.target.value;
+              const nextItem = mine.find((item) => item.id === nextId);
+              setSelectedItemId(nextId);
+              setPricingMode(nextItem?.dailyRate ? "DAY" : "HOUR");
+              setOfferedRate("");
+            }}
+            className="mt-2 w-full rounded-xl border bg-white px-4 py-3 font-normal"
+          >
             <option value="">ยังไม่ผูกของ — ส่งข้อเสนอเพื่อคุยก่อน</option>
             {mine.map((item) => <option key={item.id} value={item.id}>{item.title} · {item.province}</option>)}
           </select>
