@@ -33,7 +33,6 @@ export default function ListingImageManager({
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
     void loadImages(itemId)
       .then((nextImages) => {
         if (active) {
