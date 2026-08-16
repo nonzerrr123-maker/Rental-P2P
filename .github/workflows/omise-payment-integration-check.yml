@@ -1,0 +1,203 @@
+name: Omise payment integration check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/**"
+      - ".github/workflows/omise-payment-integration-check.yml"
+  push:
+    branches: [main]
+    paths:
+      - "my-app/**"
+      - ".github/workflows/omise-payment-integration-check.yml"
+
+jobs:
+  validate-omise-payments:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: p2p_rental
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd="pg_isready -U postgres -d p2p_rental"
+          --health-interval=5s --health-timeout=5s --health-retries=10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/p2p_rental
+      DATABASE_POOL_MAX: 8
+      KYC_PROVIDER: manual
+      PAYMENT_PROVIDER: omise
+      SANDBOX_PAYMENT_ENABLED: false
+      OMISE_API_BASE_URL: http://127.0.0.1:4100
+      OMISE_SECRET_KEY: skey_test_ci_only
+      OMISE_WEBHOOK_SECRET: d2ViaG9vay10ZXN0LXNlY3JldA==
+      OMISE_REQUEST_TIMEOUT_MS: 3000
+      OMISE_WEBHOOK_TOLERANCE_SECONDS: 300
+      OMISE_ENABLE_LIVE_PAYOUTS: false
+      URGENT_RESERVATION_TTL_MINUTES: 15
+      NEXT_TELEMETRY_DISABLED: 1
+    defaults:
+      run:
+        working-directory: my-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Apply PostgreSQL schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+      - name: Lint Omise payment scope
+        run: >-
+          npx eslint
+          lib/payments/omise.ts lib/payments/omise-checkout.ts lib/payments/omise-events.ts
+          lib/payments/settlements.ts lib/payments/refund-policy.ts lib/payments/registry.ts
+          app/api/payments/checkout/route.ts app/api/payments/webhooks/omise/route.ts
+          app/api/admin/settlements/route.ts app/api/admin/payments/[paymentId]/refund/route.ts
+          app/admin/settlements/page.tsx scripts/mock-omise-server.mjs
+      - name: Build application
+        run: npm run build
+      - name: Start Omise mock and application
+        run: |
+          nohup node scripts/mock-omise-server.mjs >/tmp/mock-omise.log 2>&1 &
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:4100/__charges >/dev/null; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:4100/__charges >/dev/null
+          nohup npm run start -- -p 3000 >/tmp/omise-next.log 2>&1 &
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/api/health/db >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/omise-next.log; exit 1
+      - name: Register payment actors
+        run: |
+          for actor in owner borrower admin; do
+            curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register -H 'Content-Type: application/json' --data "{\"displayName\":\"$actor Omise\",\"email\":\"$actor.omise-ci@example.com\",\"password\":\"omise-password-123\"}" >/dev/null
+          done
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE users SET verification_status='VERIFIED' WHERE email LIKE '%.omise-ci@example.com'; UPDATE users SET role='ADMIN' WHERE email='admin.omise-ci@example.com';"
+          for actor in owner borrower admin; do
+            curl --fail --silent -c "/tmp/$actor-omise.txt" -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data "{\"email\":\"$actor.omise-ci@example.com\",\"password\":\"omise-password-123\"}" >/dev/null
+          done
+      - name: Create standard rental and bundled PromptPay charge
+        run: |
+          curl --fail --silent -b /tmp/owner-omise.txt -X POST http://127.0.0.1:3000/api/rental-items -H 'Content-Type: application/json' --data '{"title":"Omise Camera","category":"กล้อง","description":"Omise PromptPay integration listing","condition":"GOOD","hourlyRate":100,"dailyRate":700,"minimumHours":1,"depositAmount":500,"urgentEnabled":true,"urgentReservationFeeRate":0.05,"province":"ชลบุรี"}' >/tmp/omise-item.json
+          node -e 'const d=require("/tmp/omise-item.json"); require("fs").writeFileSync("/tmp/omise-item-id",d.item.id)'
+          item_id=$(cat /tmp/omise-item-id)
+          curl --fail --silent -b /tmp/borrower-omise.txt -X POST http://127.0.0.1:3000/api/rental-requests -H 'Content-Type: application/json' --data "{\"itemId\":\"$item_id\",\"pricingMode\":\"HOUR\",\"startsAt\":\"2032-01-01T10:00:00Z\",\"endsAt\":\"2032-01-01T12:00:00Z\"}" >/tmp/omise-request.json
+          node -e 'const d=require("/tmp/omise-request.json"); require("fs").writeFileSync("/tmp/omise-request-id",d.request.id)'
+          request_id=$(cat /tmp/omise-request-id)
+          curl --fail --silent -b /tmp/owner-omise.txt -X POST "http://127.0.0.1:3000/api/rental-requests/$request_id/action" -H 'Content-Type: application/json' --data '{"action":"ACCEPT"}' >/dev/null
+          curl --fail --silent -b /tmp/borrower-omise.txt -X POST http://127.0.0.1:3000/api/payments/checkout -H 'Content-Type: application/json' --data "{\"rentalRequestId\":\"$request_id\",\"amount\":1,\"status\":\"PAID\"}" >/tmp/omise-checkout.json
+          node - <<'NODE'
+          const fs=require('fs'); const d=require('/tmp/omise-checkout.json');
+          if(!d.ok || d.checkout.provider.mode!=='OMISE' || !d.checkout.provider.configured || d.checkout.requiredAmount!=='700.00') process.exit(1);
+          const qr=d.checkout.payments.find(p=>p.action.kind==='QR');
+          if(!qr || !qr.providerReference || d.checkout.payments.length!==2 || d.checkout.payments.some(p=>p.status!=='REQUIRES_ACTION')) process.exit(1);
+          fs.writeFileSync('/tmp/omise-anchor-payment-id',qr.id); fs.writeFileSync('/tmp/omise-charge-id',qr.providerReference);
+          NODE
+          charge_id=$(cat /tmp/omise-charge-id)
+          curl --fail --silent http://127.0.0.1:4100/__charges >/tmp/omise-mock-charges.json
+          node -e 'const d=require("/tmp/omise-mock-charges.json"); const c=d.charges.find(x=>x.id===require("fs").readFileSync("/tmp/omise-charge-id","utf8")); if(!c||c.amount!==70000||c.currency!=="THB")process.exit(1)'
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM payments WHERE rental_request_id='$request_id' AND provider='OMISE'")" = "2"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT status FROM rental_requests WHERE id='$request_id'")" = "WAITING_PAYMENT"
+      - name: Reject forged and stale Omise webhooks
+        run: |
+          charge_id=$(cat /tmp/omise-charge-id)
+          printf '{"id":"evnt_test_unsigned","key":"charge.complete","data":{"id":"%s"}}' "$charge_id" >/tmp/omise-unsigned.json
+          code=$(curl --silent --output /tmp/omise-unsigned-response.json --write-out '%{http_code}' -X POST http://127.0.0.1:3000/api/payments/webhooks/omise -H 'Content-Type: application/json' --data-binary @/tmp/omise-unsigned.json)
+          test "$code" = "401"
+          timestamp=$(( $(date +%s) - 1000 ))
+          signature=$(node -e 'const fs=require("fs"),c=require("crypto");const ts=process.argv[1],b=fs.readFileSync("/tmp/omise-unsigned.json","utf8"),s=Buffer.from(process.env.OMISE_WEBHOOK_SECRET,"base64");process.stdout.write(c.createHmac("sha256",s).update(`${ts}.${b}`).digest("hex"))' "$timestamp")
+          code=$(curl --silent --output /tmp/omise-stale-response.json --write-out '%{http_code}' -X POST http://127.0.0.1:3000/api/payments/webhooks/omise -H 'Content-Type: application/json' -H "Omise-Signature: $signature" -H "Omise-Signature-Timestamp: $timestamp" --data-binary @/tmp/omise-unsigned.json)
+          test "$code" = "401"
+      - name: Ignore verified webhook with wrong provider amount
+        run: |
+          charge_id=$(cat /tmp/omise-charge-id)
+          curl --fail --silent -X POST "http://127.0.0.1:4100/__control/charges/$charge_id" -H 'Content-Type: application/json' --data '{"status":"successful","amount":1}' >/dev/null
+          printf '{"id":"evnt_test_wrong_amount","key":"charge.complete","data":{"id":"%s"}}' "$charge_id" >/tmp/omise-wrong.json
+          timestamp=$(date +%s)
+          signature=$(node -e 'const fs=require("fs"),c=require("crypto");const ts=process.argv[1],b=fs.readFileSync("/tmp/omise-wrong.json","utf8"),s=Buffer.from(process.env.OMISE_WEBHOOK_SECRET,"base64");process.stdout.write(c.createHmac("sha256",s).update(`${ts}.${b}`).digest("hex"))' "$timestamp")
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/payments/webhooks/omise -H 'Content-Type: application/json' -H "Omise-Signature: $signature" -H "Omise-Signature-Timestamp: $timestamp" --data-binary @/tmp/omise-wrong.json >/tmp/omise-wrong-response.json
+          node -e 'const d=require("/tmp/omise-wrong-response.json"); if(!d.ok||d.outcome!=="IGNORED")process.exit(1)'
+          request_id=$(cat /tmp/omise-request-id)
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM payments WHERE rental_request_id='$request_id' AND status='SUCCEEDED'")" = "0"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT processing_error FROM payment_events WHERE provider_event_id='evnt_test_wrong_amount'")" = "AMOUNT_OR_CURRENCY_MISMATCH"
+      - name: Process authoritative Omise charge and duplicate idempotently
+        run: |
+          charge_id=$(cat /tmp/omise-charge-id)
+          curl --fail --silent -X POST "http://127.0.0.1:4100/__control/charges/$charge_id" -H 'Content-Type: application/json' --data '{"status":"successful","amount":70000,"currency":"THB"}' >/dev/null
+          printf '{"id":"evnt_test_success","key":"charge.complete","data":{"id":"%s","status":"successful"}}' "$charge_id" >/tmp/omise-success.json
+          timestamp=$(date +%s)
+          signature=$(node -e 'const fs=require("fs"),c=require("crypto");const ts=process.argv[1],b=fs.readFileSync("/tmp/omise-success.json","utf8"),s=Buffer.from(process.env.OMISE_WEBHOOK_SECRET,"base64");process.stdout.write(c.createHmac("sha256",s).update(`${ts}.${b}`).digest("hex"))' "$timestamp")
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/payments/webhooks/omise -H 'Content-Type: application/json' -H "Omise-Signature: $signature" -H "Omise-Signature-Timestamp: $timestamp" --data-binary @/tmp/omise-success.json >/tmp/omise-success-response.json
+          node -e 'const d=require("/tmp/omise-success-response.json"); if(!d.ok||d.outcome!=="PROCESSED"||d.rentalStatus!=="PAID")process.exit(1)'
+          request_id=$(cat /tmp/omise-request-id)
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM payments WHERE rental_request_id='$request_id' AND status='SUCCEEDED'")" = "2"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT status FROM deposits WHERE rental_request_id='$request_id'")" = "HELD"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT status FROM rental_requests WHERE id='$request_id'")" = "PAID"
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/payments/webhooks/omise -H 'Content-Type: application/json' -H "Omise-Signature: $signature" -H "Omise-Signature-Timestamp: $timestamp" --data-binary @/tmp/omise-success.json >/tmp/omise-duplicate-response.json
+          node -e 'const d=require("/tmp/omise-duplicate-response.json"); if(!d.ok||d.outcome!=="DUPLICATE")process.exit(1)'
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM payment_events WHERE provider='OMISE' AND provider_event_id='evnt_test_success'")" = "1"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT payload ? 'data' FROM payment_events WHERE provider_event_id='evnt_test_success'")" = "f"
+      - name: Hold lender settlement centrally without fake bank payout
+        run: |
+          request_id=$(cat /tmp/omise-request-id)
+          test "$(psql "$DATABASE_URL" -Atc "SELECT metadata->'settlement'->>'status' FROM payments WHERE rental_request_id='$request_id' AND type='RENTAL'")" = "PLATFORM_HELD"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT metadata->'settlement'->>'payoutMode' FROM payments WHERE rental_request_id='$request_id' AND type='RENTAL'")" = "MANUAL_REQUIRED"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT metadata->'settlement'->>'payoutAmount' FROM payments WHERE rental_request_id='$request_id' AND type='RENTAL'")" = "200.00"
+          curl --fail --silent -b /tmp/admin-omise.txt http://127.0.0.1:3000/api/admin/settlements >/tmp/omise-settlements.json
+          node -e 'const d=require("/tmp/omise-settlements.json"); if(!d.ok||d.settlements.length!==1||d.settlements[0].status!=="PLATFORM_HELD"||d.settlements[0].livePayoutsEnabled)process.exit(1)'
+          curl --fail --silent http://127.0.0.1:4100/__charges >/tmp/omise-transfer-state.json
+          node -e 'const d=require("/tmp/omise-transfer-state.json"); if(d.transferCalls!==0)process.exit(1)'
+      - name: Require manual refund for Omise PromptPay
+        run: |
+          anchor_id=$(cat /tmp/omise-anchor-payment-id)
+          code=$(curl --silent --output /tmp/omise-refund.json --write-out '%{http_code}' -b /tmp/admin-omise.txt -X POST "http://127.0.0.1:3000/api/admin/payments/$anchor_id/refund")
+          test "$code" = "409"
+          node -e 'const d=require("/tmp/omise-refund.json"); if(d.code!=="MANUAL_REFUND_REQUIRED")process.exit(1)'
+          request_id=$(cat /tmp/omise-request-id)
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM payments WHERE rental_request_id='$request_id' AND type='REFUND'")" = "0"
+      - name: Bundle sub-minimum urgent fee with deposit into one PromptPay charge
+        run: |
+          item_id=$(cat /tmp/omise-item-id)
+          curl --fail --silent -b /tmp/borrower-omise.txt -X POST http://127.0.0.1:3000/api/rental-requests -H 'Content-Type: application/json' --data "{\"itemId\":\"$item_id\",\"pricingMode\":\"HOUR\",\"startsAt\":\"2032-01-10T10:00:00Z\",\"endsAt\":\"2032-01-10T12:00:00Z\",\"isUrgent\":true}" >/tmp/omise-urgent.json
+          node -e 'const d=require("/tmp/omise-urgent.json"); if(d.request.urgentReservationFeeAmount!=="10.00")process.exit(1); require("fs").writeFileSync("/tmp/omise-urgent-id",d.request.id)'
+          urgent_id=$(cat /tmp/omise-urgent-id)
+          curl --fail --silent -b /tmp/borrower-omise.txt -X POST http://127.0.0.1:3000/api/payments/checkout -H 'Content-Type: application/json' --data "{\"rentalRequestId\":\"$urgent_id\"}" >/tmp/omise-urgent-checkout.json
+          node - <<'NODE'
+          const fs=require('fs'); const d=require('/tmp/omise-urgent-checkout.json');
+          const qr=d.checkout.payments.find(p=>p.action.kind==='QR');
+          if(!d.ok || d.checkout.requiredAmount!=='510.00' || !qr || d.checkout.payments.map(p=>p.type).sort().join(',')!=='DEPOSIT,URGENT_RESERVATION_FEE') process.exit(1);
+          fs.writeFileSync('/tmp/omise-urgent-charge-id',qr.providerReference);
+          NODE
+          curl --fail --silent http://127.0.0.1:4100/__charges >/tmp/omise-urgent-charges.json
+          node -e 'const d=require("/tmp/omise-urgent-charges.json");const c=d.charges.find(x=>x.id===require("fs").readFileSync("/tmp/omise-urgent-charge-id","utf8"));if(!c||c.amount!==51000)process.exit(1)'
+          charge_id=$(cat /tmp/omise-urgent-charge-id)
+          curl --fail --silent -X POST "http://127.0.0.1:4100/__control/charges/$charge_id" -H 'Content-Type: application/json' --data '{"status":"successful"}' >/dev/null
+          printf '{"id":"evnt_test_urgent_success","key":"charge.complete","data":{"id":"%s"}}' "$charge_id" >/tmp/omise-urgent-success.json
+          timestamp=$(date +%s)
+          signature=$(node -e 'const fs=require("fs"),c=require("crypto");const ts=process.argv[1],b=fs.readFileSync("/tmp/omise-urgent-success.json","utf8"),s=Buffer.from(process.env.OMISE_WEBHOOK_SECRET,"base64");process.stdout.write(c.createHmac("sha256",s).update(`${ts}.${b}`).digest("hex"))' "$timestamp")
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/payments/webhooks/omise -H 'Content-Type: application/json' -H "Omise-Signature: $signature" -H "Omise-Signature-Timestamp: $timestamp" --data-binary @/tmp/omise-urgent-success.json >/dev/null
+          test "$(psql "$DATABASE_URL" -Atc "SELECT status FROM rental_requests WHERE id='$urgent_id'")" = "PAID"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM payments WHERE rental_request_id='$urgent_id' AND status='SUCCEEDED'")" = "2"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM payments WHERE rental_request_id='$urgent_id' AND metadata ? 'settlement'")" = "0"
+      - name: Render settlement admin UI
+        run: |
+          curl --fail --silent -L -b /tmp/admin-omise.txt http://127.0.0.1:3000/admin/settlements >/tmp/omise-settlement-page.html
+          grep -q 'ยอดที่แพลตฟอร์มถือไว้ก่อน payout' /tmp/omise-settlement-page.html
+          grep -q 'PLATFORM_HELD' /tmp/omise-settlement-page.html
+          grep -q 'MANUAL_REQUIRED' /tmp/omise-settlement-page.html
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          cat /tmp/omise-next.log || true
+          cat /tmp/mock-omise.log || true
