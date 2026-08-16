@@ -1,0 +1,186 @@
+name: Rental fulfillment integration check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/**"
+      - ".github/workflows/rental-fulfillment-integration-check.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "my-app/**"
+      - ".github/workflows/rental-fulfillment-integration-check.yml"
+
+jobs:
+  validate-rental-fulfillment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: p2p_rental
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d p2p_rental"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/p2p_rental
+      DATABASE_POOL_MAX: 8
+      KYC_PROVIDER: manual
+      PAYMENT_PROVIDER: sandbox
+      SANDBOX_PAYMENT_ENABLED: true
+      OBJECT_STORAGE_ENDPOINT: http://127.0.0.1:9000
+      OBJECT_STORAGE_REGION: us-east-1
+      OBJECT_STORAGE_ACCESS_KEY_ID: minioadmin
+      OBJECT_STORAGE_SECRET_ACCESS_KEY: minioadmin
+      OBJECT_STORAGE_BUCKET: rental-images
+      OBJECT_STORAGE_FORCE_PATH_STYLE: "true"
+      OBJECT_STORAGE_REQUEST_TIMEOUT_MS: 10000
+      NEXT_TELEMETRY_DISABLED: 1
+    defaults:
+      run:
+        working-directory: my-app
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Apply schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+      - name: Start S3-compatible MinIO
+        working-directory: .
+        run: |
+          docker run -d --name fulfillment-minio -p 9000:9000 -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin minio/minio server /data
+          for attempt in {1..40}; do
+            if curl --fail --silent http://127.0.0.1:9000/minio/health/live >/dev/null; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:9000/minio/health/live >/dev/null
+          docker run --rm --network host --entrypoint /bin/sh minio/mc -c 'mc alias set local http://127.0.0.1:9000 minioadmin minioadmin && mc mb --ignore-existing local/rental-images'
+      - name: Lint fulfillment scope
+        run: >-
+          npx eslint
+          lib/rental/fulfillment.ts
+          app/api/rentals/[id]/route.ts
+          app/api/rentals/[id]/contract/confirm/route.ts
+          app/api/rentals/[id]/handover/route.ts
+          app/api/rentals/[id]/handover/[eventId]/evidence/[index]/route.ts
+          app/api/admin/rentals/[id]/deposit/manual-refund/route.ts
+          app/rental/[id]/page.tsx
+          app/rental/[id]/rental-fulfillment-client.tsx
+          app/admin/rentals/page.tsx
+      - name: Build application
+        run: npm run build
+      - name: Start application
+        run: |
+          nohup npm run start -- -p 3000 >/tmp/fulfillment-next.log 2>&1 &
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/api/health/db >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/fulfillment-next.log
+          exit 1
+      - name: Register actors and login
+        run: |
+          for spec in 'owner|owner.fulfillment@example.com|owner-password' 'borrower|borrower.fulfillment@example.com|borrower-password' 'stranger|stranger.fulfillment@example.com|stranger-password' 'admin|admin.fulfillment@example.com|admin-password'; do
+            IFS='|' read -r name email password <<<"$spec"
+            curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register -H 'Content-Type: application/json' --data "{\"displayName\":\"$name\",\"email\":\"$email\",\"password\":\"$password\"}" >/dev/null
+          done
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE users SET verification_status='VERIFIED' WHERE email LIKE '%.fulfillment@example.com'; UPDATE users SET role='SUPERADMIN' WHERE email='admin.fulfillment@example.com';"
+          curl --fail --silent -c /tmp/owner.txt -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"owner.fulfillment@example.com","password":"owner-password"}' >/dev/null
+          curl --fail --silent -c /tmp/borrower.txt -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"borrower.fulfillment@example.com","password":"borrower-password"}' >/dev/null
+          curl --fail --silent -c /tmp/stranger.txt -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"stranger.fulfillment@example.com","password":"stranger-password"}' >/dev/null
+          curl --fail --silent -c /tmp/admin.txt -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"admin.fulfillment@example.com","password":"admin-password"}' >/dev/null
+      - name: Seed paid sandbox rental and Omise-return rental
+        run: |
+          owner_id=$(psql "$DATABASE_URL" -Atq -c "SELECT id FROM users WHERE email='owner.fulfillment@example.com'")
+          borrower_id=$(psql "$DATABASE_URL" -Atq -c "SELECT id FROM users WHERE email='borrower.fulfillment@example.com'")
+          item_id=$(psql "$DATABASE_URL" -Atq -c "INSERT INTO rental_items(owner_id,title,category,description,condition,daily_rate,deposit_amount,province) VALUES ('$owner_id','Fulfillment Camera','กล้อง','ใช้ทดสอบ contract pickup return deposit settlement','GOOD',600,500,'ชลบุรี') RETURNING id")
+          rental_id=$(psql "$DATABASE_URL" -Atq -c "INSERT INTO rental_requests(item_id,lender_id,borrower_id,pricing_mode,starts_at,ends_at,unit_rate,duration_units,rental_amount,deposit_amount,status,accepted_at) VALUES ('$item_id','$owner_id','$borrower_id','DAY','2030-11-01T10:00:00Z','2030-11-02T10:00:00Z',600,1,600,500,'PAID',now()) RETURNING id")
+          rent_payment=$(psql "$DATABASE_URL" -Atq -c "INSERT INTO payments(rental_request_id,payer_id,type,provider,provider_reference,idempotency_key,amount,currency,status,metadata,succeeded_at) VALUES ('$rental_id','$borrower_id','RENTAL','SANDBOX','sandbox-rental-$rental_id','seed-rental-$rental_id',600,'THB','SUCCEEDED','{\"settlement\":{\"status\":\"PLATFORM_HELD\",\"payoutAmount\":\"600.00\",\"payoutMode\":\"MANUAL_REQUIRED\",\"payoutProvider\":\"OMISE_TRANSFER\"}}',now()) RETURNING id")
+          deposit_payment=$(psql "$DATABASE_URL" -Atq -c "INSERT INTO payments(rental_request_id,payer_id,type,provider,provider_reference,idempotency_key,amount,currency,status,metadata,succeeded_at) VALUES ('$rental_id','$borrower_id','DEPOSIT','SANDBOX','sandbox-deposit-$rental_id','seed-deposit-$rental_id',500,'THB','SUCCEEDED','{}',now()) RETURNING id")
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "INSERT INTO deposits(rental_request_id,payment_id,amount,status,held_at) VALUES ('$rental_id','$deposit_payment',500,'HELD',now());"
+          echo "$rental_id" >/tmp/rental-id
+
+          item2_id=$(psql "$DATABASE_URL" -Atq -c "INSERT INTO rental_items(owner_id,title,category,description,condition,daily_rate,deposit_amount,province) VALUES ('$owner_id','Manual Refund Lens','เลนส์','ใช้ทดสอบ manual refund boundary หลังคืน','GOOD',400,700,'ชลบุรี') RETURNING id")
+          rental2_id=$(psql "$DATABASE_URL" -Atq -c "INSERT INTO rental_requests(item_id,lender_id,borrower_id,pricing_mode,starts_at,ends_at,unit_rate,duration_units,rental_amount,deposit_amount,status,accepted_at) VALUES ('$item2_id','$owner_id','$borrower_id','DAY','2030-12-01T10:00:00Z','2030-12-02T10:00:00Z',400,1,400,700,'RETURNING',now()) RETURNING id")
+          rent2_payment=$(psql "$DATABASE_URL" -Atq -c "INSERT INTO payments(rental_request_id,payer_id,type,provider,provider_reference,idempotency_key,amount,currency,status,metadata,succeeded_at) VALUES ('$rental2_id','$borrower_id','RENTAL','OMISE','chrg_test_rental2','seed-rental-$rental2_id',400,'THB','SUCCEEDED','{\"settlement\":{\"status\":\"PLATFORM_HELD\",\"payoutAmount\":\"400.00\",\"payoutMode\":\"MANUAL_REQUIRED\",\"payoutProvider\":\"OMISE_TRANSFER\"}}',now()) RETURNING id")
+          deposit2_payment=$(psql "$DATABASE_URL" -Atq -c "INSERT INTO payments(rental_request_id,payer_id,type,provider,provider_reference,idempotency_key,amount,currency,status,metadata,succeeded_at) VALUES ('$rental2_id','$borrower_id','DEPOSIT','OMISE','chrg_test_deposit2','seed-deposit-$rental2_id',700,'THB','SUCCEEDED','{}',now()) RETURNING id")
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "INSERT INTO deposits(rental_request_id,payment_id,amount,status,held_at) VALUES ('$rental2_id','$deposit2_payment',700,'HELD',now()); INSERT INTO rental_handover_events(rental_request_id,event_type,confirmed_by) VALUES ('$rental2_id','RETURN','$borrower_id');"
+          echo "$rental2_id" >/tmp/rental2-id
+          printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' | base64 -d >/tmp/evidence.png
+      - name: Protect rental and contract confirmations
+        run: |
+          rental_id=$(cat /tmp/rental-id)
+          code=$(curl --silent --output /tmp/stranger-rental.json --write-out '%{http_code}' -b /tmp/stranger.txt "http://127.0.0.1:3000/api/rentals/$rental_id")
+          test "$code" = "403"
+          curl --fail --silent -b /tmp/borrower.txt -X POST "http://127.0.0.1:3000/api/rentals/$rental_id/contract/confirm" >/tmp/borrower-contract.json
+          node -e 'const d=require("/tmp/borrower-contract.json"); if(!d.ok || d.rental.status!=="PAID" || !d.rental.contract.borrowerConfirmedAt || d.rental.contract.lenderConfirmedAt) process.exit(1)'
+          code=$(curl --silent --output /tmp/admin-contract.json --write-out '%{http_code}' -b /tmp/admin.txt -X POST "http://127.0.0.1:3000/api/rentals/$rental_id/contract/confirm")
+          test "$code" = "403"
+          curl --fail --silent -b /tmp/owner.txt -X POST "http://127.0.0.1:3000/api/rentals/$rental_id/contract/confirm" >/tmp/owner-contract.json
+          node -e 'const d=require("/tmp/owner-contract.json"); if(!d.ok || d.rental.status!=="WAITING_PICKUP" || !d.rental.contract.agreedAt) process.exit(1)'
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM rental_contracts WHERE rental_request_id='$rental_id' AND agreed_at IS NOT NULL")" = "1"
+      - name: Require both pickup confirmations and protect evidence
+        run: |
+          rental_id=$(cat /tmp/rental-id)
+          curl --fail --silent -b /tmp/borrower.txt -X POST "http://127.0.0.1:3000/api/rentals/$rental_id/handover" -F eventType=PICKUP -F conditionNotes='รับของสภาพดี' -F 'files=@/tmp/evidence.png;type=image/png' >/tmp/pickup-borrower.json
+          node -e 'const d=require("/tmp/pickup-borrower.json"); if(d.rental.status!=="WAITING_PICKUP" || d.rental.handovers.length!==1 || d.rental.handovers[0].evidenceCount!==1) process.exit(1)'
+          event_id=$(node -pe 'require("/tmp/pickup-borrower.json").rental.handovers[0].id')
+          curl --fail --silent -b /tmp/borrower.txt "http://127.0.0.1:3000/api/rentals/$rental_id/handover/$event_id/evidence/0" >/tmp/evidence-read.png
+          cmp /tmp/evidence.png /tmp/evidence-read.png
+          code=$(curl --silent --output /tmp/evidence-stranger --write-out '%{http_code}' -b /tmp/stranger.txt "http://127.0.0.1:3000/api/rentals/$rental_id/handover/$event_id/evidence/0")
+          test "$code" = "403"
+          curl --fail --silent -b /tmp/borrower.txt -X POST "http://127.0.0.1:3000/api/rentals/$rental_id/handover" -F eventType=PICKUP >/tmp/pickup-duplicate.json
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM rental_handover_events WHERE rental_request_id='$rental_id' AND event_type='PICKUP'")" = "1"
+          curl --fail --silent -b /tmp/owner.txt -X POST "http://127.0.0.1:3000/api/rentals/$rental_id/handover" -F eventType=PICKUP -F conditionNotes='ส่งมอบครบ' >/tmp/pickup-owner.json
+          node -e 'const d=require("/tmp/pickup-owner.json"); if(d.rental.status!=="RENTING") process.exit(1)'
+      - name: Return flow refunds sandbox deposit and releases settlement safely
+        run: |
+          rental_id=$(cat /tmp/rental-id)
+          curl --fail --silent -b /tmp/borrower.txt -X POST "http://127.0.0.1:3000/api/rentals/$rental_id/handover" -F eventType=RETURN -F conditionNotes='คืนของเรียบร้อย' >/tmp/return-borrower.json
+          node -e 'const d=require("/tmp/return-borrower.json"); if(d.rental.status!=="RETURNING") process.exit(1)'
+          curl --fail --silent -b /tmp/owner.txt -X POST "http://127.0.0.1:3000/api/rentals/$rental_id/handover" -F eventType=RETURN -F conditionNotes='รับคืนสภาพดี' -F 'files=@/tmp/evidence.png;type=image/png' >/tmp/return-owner.json
+          node -e 'const d=require("/tmp/return-owner.json"); if(d.rental.status!=="COMPLETED" || d.rental.deposit.status!=="REFUNDED" || d.rental.settlement.status!=="READY_FOR_PAYOUT") process.exit(1)'
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM payments WHERE rental_request_id='$rental_id' AND type='REFUND' AND provider='SANDBOX' AND status='SUCCEEDED'")" = "1"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM payments WHERE rental_request_id='$rental_id' AND metadata #>> '{settlement,status}'='PAID_OUT'")" = "0"
+      - name: Omise deposit stays held until real manual refund reference is reconciled
+        run: |
+          rental_id=$(cat /tmp/rental2-id)
+          curl --fail --silent -b /tmp/owner.txt -X POST "http://127.0.0.1:3000/api/rentals/$rental_id/handover" -F eventType=RETURN -F conditionNotes='รับคืนแล้ว' >/tmp/manual-return.json
+          node -e 'const d=require("/tmp/manual-return.json"); if(d.rental.status!=="RETURNED" || d.rental.deposit.status!=="HELD" || d.rental.deposit.resolution!=="MANUAL_REFUND_REQUIRED" || d.rental.settlement.status!=="READY_FOR_PAYOUT") process.exit(1)'
+          code=$(curl --silent --output /tmp/borrower-manual-refund.json --write-out '%{http_code}' -b /tmp/borrower.txt -X POST "http://127.0.0.1:3000/api/admin/rentals/$rental_id/deposit/manual-refund" -H 'Content-Type: application/json' --data '{"providerReference":"BANK-REAL-001","notes":"คืนผ่านบัญชีกลางแล้ว"}')
+          test "$code" = "403"
+          code=$(curl --silent --output /tmp/admin-bad-refund.json --write-out '%{http_code}' -b /tmp/admin.txt -X POST "http://127.0.0.1:3000/api/admin/rentals/$rental_id/deposit/manual-refund" -H 'Content-Type: application/json' --data '{"providerReference":"","notes":"missing ref"}')
+          test "$code" = "400"
+          curl --fail --silent -b /tmp/admin.txt -X POST "http://127.0.0.1:3000/api/admin/rentals/$rental_id/deposit/manual-refund" -H 'Content-Type: application/json' --data '{"providerReference":"BANK-REAL-001","notes":"ยืนยันจากรายการเดินบัญชีกลางว่าคืนเงินจริงแล้ว"}' >/tmp/admin-refund.json
+          node -e 'const d=require("/tmp/admin-refund.json"); if(d.rental.status!=="COMPLETED" || d.rental.deposit.status!=="REFUNDED") process.exit(1)'
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM admin_audit_logs WHERE target_id='$rental_id' AND action='CONFIRM_MANUAL_DEPOSIT_REFUND'")" = "1"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM payments WHERE rental_request_id='$rental_id' AND type='REFUND' AND provider='MANUAL_BANK' AND provider_reference='BANK-REAL-001' AND status='SUCCEEDED'")" = "1"
+      - name: Render real rental and admin pages without prototype states
+        run: |
+          rental_id=$(cat /tmp/rental-id)
+          curl --fail --silent -b /tmp/borrower.txt "http://127.0.0.1:3000/rental/$rental_id" >/tmp/rental-page.html
+          grep -q 'สถานะจริงจาก PostgreSQL' /tmp/rental-page.html
+          ! grep -q 'BORROWING' /tmp/rental-page.html
+          ! grep -q 'RETURN_PENDING' /tmp/rental-page.html
+          curl --fail --silent -b /tmp/admin.txt http://127.0.0.1:3000/admin/rentals >/tmp/admin-rentals.html
+          grep -q 'Rental operations' /tmp/admin-rentals.html
+          grep -q 'Fulfillment Camera' /tmp/admin-rentals.html
+          ! grep -q 'PlayStation 5' /tmp/admin-rentals.html
+      - name: Show logs on failure
+        if: failure()
+        run: cat /tmp/fulfillment-next.log || true

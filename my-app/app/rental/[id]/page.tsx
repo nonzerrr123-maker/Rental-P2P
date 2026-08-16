@@ -1,22 +1,11 @@
-"use client";
+import { requireVerifiedUserPage } from "@/lib/auth/authorization";
+import { getRentalFulfillment } from "@/lib/rental/fulfillment";
+import RentalFulfillmentClient from "./rental-fulfillment-client";
 
-import { useState } from "react";
-
-type Status = "ACCEPTED" | "WAITING_PAYMENT" | "PAID" | "WAITING_PICKUP" | "BORROWING" | "RETURN_PENDING" | "RETURNED" | "COMPLETED";
-
-const steps: Status[] = ["ACCEPTED", "WAITING_PAYMENT", "PAID", "WAITING_PICKUP", "BORROWING", "RETURN_PENDING", "RETURNED", "COMPLETED"];
-const labels: Record<Status, string> = { ACCEPTED: "ผู้ให้ยืมรับคำขอ", WAITING_PAYMENT: "รอชำระเงิน", PAID: "ชำระเงินแล้ว", WAITING_PICKUP: "รอรับของ", BORROWING: "กำลังยืม", RETURN_PENDING: "รอคืนของ", RETURNED: "คืนของแล้ว", COMPLETED: "เสร็จสิ้น" };
-
-export default function RentalPage() {
-  const [status, setStatus] = useState<Status>("ACCEPTED");
-  const index = steps.indexOf(status);
-  const next = steps[index + 1];
-
-  const action = () => {
-    if (next) setStatus(next);
-  };
-
-  return <main className="min-h-screen bg-[#fafafa] text-gray-950"><header className="border-b bg-white px-6"><div className="mx-auto flex h-20 max-w-6xl items-center justify-between"><a href="/" className="text-2xl font-black">P2P<span className="text-[#C9A227]">.</span></a><a href="/dashboard" className="rounded-lg border px-4 py-2 text-sm font-bold hover:border-[#C9A227]">Dashboard</a></div></header><div className="mx-auto max-w-5xl px-6 py-12"><div className="flex flex-col justify-between gap-4 md:flex-row md:items-end"><div><p className="text-xs font-black tracking-[3px] text-[#C9A227]">RENTAL #R-0001</p><h1 className="mt-2 text-4xl font-black">PlayStation 5</h1><p className="mt-2 text-gray-500">ผู้ยืม: Demo User · ผู้ให้ยืม: Game House · 15–18 Aug 2026</p></div><span className="w-fit rounded-full bg-[#fbf5df] px-4 py-2 text-sm font-black text-[#8d6d12]">{labels[status]}</span></div>
-<section className="mt-8 rounded-3xl border bg-white p-6 shadow-sm md:p-8"><h2 className="text-xl font-black">สถานะการยืม</h2><div className="mt-8 overflow-x-auto pb-3"><div className="flex min-w-[760px] items-start">{steps.map((step, i) => <div key={step} className="flex flex-1 items-start"><div className="flex flex-col items-center"><div className={`grid h-10 w-10 place-items-center rounded-full text-sm font-black ${i <= index ? "bg-[#C9A227] text-black" : "bg-gray-100 text-gray-400"}`}>{i < index ? "✓" : i + 1}</div><p className={`mt-3 max-w-[100px] text-center text-xs font-bold ${i <= index ? "text-gray-950" : "text-gray-400"}`}>{labels[step]}</p></div>{i < steps.length - 1 && <div className={`mt-5 h-1 flex-1 ${i < index ? "bg-[#C9A227]" : "bg-gray-100"}`} />}</div>)}</div></div></section>
-<div className="mt-6 grid gap-6 lg:grid-cols-[1.4fr_.8fr]"><section className="rounded-3xl border bg-white p-7"><h2 className="text-xl font-black">รายการค่าใช้จ่าย</h2><div className="mt-6 space-y-4 text-sm"><div className="flex justify-between"><span className="text-gray-500">ค่าเช่า 3 วัน</span><b>฿900</b></div><div className="flex justify-between"><span className="text-gray-500">เงินประกัน</span><b>฿3,000</b></div><div className="border-t pt-4"><div className="flex justify-between text-lg"><span className="font-bold">ยอดที่ต้องชำระ</span><b>฿3,900</b></div></div></div><a href="/chat" className="mt-7 block rounded-xl border px-5 py-3 text-center font-bold hover:border-[#C9A227]">💬 เปิดแชตกับ Game House</a></section><section className="rounded-3xl border bg-white p-7"><p className="text-xs font-black tracking-[2px] text-[#C9A227]">NEXT ACTION</p><h2 className="mt-2 text-xl font-black">{status === "ACCEPTED" ? "ชำระเงินเพื่อยืนยันการยืม" : status === "PAID" ? "เตรียมรับของ" : status === "WAITING_PICKUP" ? "ยืนยันว่าได้รับของแล้ว" : status === "BORROWING" ? "เมื่อถึงกำหนด ให้ยืนยันการคืน" : status === "RETURN_PENDING" ? "ยืนยันว่าคืนของแล้ว" : status === "RETURNED" ? "ตรวจสอบและปิดรายการ" : status === "COMPLETED" ? "รายการเสร็จสมบูรณ์" : "ดำเนินการต่อ"}</h2><p className="mt-3 text-sm leading-6 text-gray-500">ระบบ Prototype จำลองการเปลี่ยนสถานะเพื่อทดสอบ workflow ก่อนเชื่อม Payment และฐานข้อมูลจริง</p>{next && <button onClick={action} className="mt-6 w-full rounded-xl bg-black px-5 py-3.5 font-black text-white hover:bg-gray-800">{next === "WAITING_PAYMENT" ? "ไปชำระเงิน (Mock)" : next === "PAID" ? "ชำระเงินสำเร็จ" : next === "WAITING_PICKUP" ? "ยืนยันพร้อมรับของ" : next === "BORROWING" ? "ยืนยันรับของแล้ว" : next === "RETURN_PENDING" ? "แจ้งคืนของ" : next === "RETURNED" ? "ยืนยันรับคืน" : "ปิดรายการ"}</button>}{status === "COMPLETED" && <div className="mt-6 rounded-xl bg-green-50 p-4 text-sm font-bold text-green-700">✓ การยืมรายการนี้เสร็จสมบูรณ์แล้ว</div>}</section></div></div></main>;
+export default async function RentalPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const user = await requireVerifiedUserPage(`/rental/${id}`);
+  const rental = await getRentalFulfillment(user, id);
+  const isAdmin = user.role === "ADMIN" || user.role === "SUPERADMIN";
+  return <RentalFulfillmentClient initialRental={rental} actorId={user.id} isAdmin={isAdmin} />;
 }
