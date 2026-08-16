@@ -254,7 +254,8 @@ export async function listMessages(
     if (options.before && options.after) {
       throw new ChatError(400, "VALIDATION_ERROR", "Use either before or after cursor, not both");
     }
-    const safeLimit = Math.min(Math.max(Math.trunc(options.limit ?? 50), 1), 100);
+    const requestedLimit = Number.isFinite(options.limit) ? Math.trunc(options.limit as number) : 50;
+    const safeLimit = Math.min(Math.max(requestedLimit, 1), 100);
     let cursorCreatedAt: Date | null = null;
     let cursorId: string | null = null;
     if (options.before || options.after) {
@@ -270,10 +271,10 @@ export async function listMessages(
     const isAfter = Boolean(options.after);
     const condition = cursorCreatedAt && cursorId
       ? isAfter
-        ? "AND (m.created_at, m.id) > ($3::timestamptz, $4::uuid)"
-        : "AND (m.created_at, m.id) < ($3::timestamptz, $4::uuid)"
+        ? "AND (m.created_at, m.id) > ($2::timestamptz, $3::uuid)"
+        : "AND (m.created_at, m.id) < ($2::timestamptz, $3::uuid)"
       : "";
-    const values: unknown[] = [access.id, userId];
+    const values: unknown[] = [access.id];
     if (cursorCreatedAt && cursorId) values.push(cursorCreatedAt.toISOString(), cursorId);
     values.push(safeLimit + 1);
     const limitIndex = values.length;
