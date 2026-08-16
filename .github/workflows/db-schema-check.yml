@@ -1,0 +1,57 @@
+name: Database schema check
+
+on:
+  push:
+    paths:
+      - "my-app/docs/database-schema.sql"
+      - "my-app/docs/database-smoke-test.sql"
+      - ".github/workflows/db-schema-check.yml"
+  pull_request:
+    paths:
+      - "my-app/docs/database-schema.sql"
+      - "my-app/docs/database-smoke-test.sql"
+      - ".github/workflows/db-schema-check.yml"
+
+jobs:
+  validate-postgres-schema:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: p2p_rental
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d p2p_rental"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/p2p_rental
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Apply canonical schema
+        working-directory: my-app
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+
+      - name: Run database smoke test
+        working-directory: my-app
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-smoke-test.sql
+
+      - name: Verify application table count
+        working-directory: my-app
+        run: |
+          count=$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE';")
+          test "$count" = "23"
