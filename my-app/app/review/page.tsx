@@ -1,9 +1,13 @@
-"use client";
+import { redirect } from "next/navigation";
+import { requireVerifiedUserPage } from "@/lib/auth/authorization";
+import { getReviewContext } from "@/lib/rental/reviews";
+import ReviewClient from "./review-client";
 
-import { useState } from "react";
-
-export default function ReviewPage() {
-  const [rating, setRating] = useState(0);
-  const [sent, setSent] = useState(false);
-  return <main className="min-h-screen bg-[#f7f7f5] text-neutral-900"><header className="border-b border-neutral-200 bg-white"><div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-5"><a href="/" className="text-2xl font-black">P2P<span className="text-[#c9a227]">.</span></a><a href="/dashboard" className="rounded-full border px-4 py-2 text-sm font-bold">Dashboard</a></div></header><div className="mx-auto max-w-2xl px-6 py-12"><div className="rounded-3xl border border-neutral-200 bg-white p-8 shadow-sm"><span className="text-xs font-black tracking-[3px] text-[#a58316]">REVIEW</span><h1 className="mt-3 text-3xl font-black">ให้คะแนนการยืม</h1><p className="mt-2 text-neutral-500">PlayStation 5 · Game House · Rental R-0001</p>{sent ? <div className="mt-8 rounded-2xl bg-[#faf7ed] p-6 text-center ring-1 ring-[#e7d9a8]"><div className="text-4xl">⭐</div><h2 className="mt-3 text-xl font-black">ขอบคุณสำหรับรีวิว</h2><p className="mt-1 text-sm text-neutral-500">รีวิวของคุณช่วยให้ชุมชน P2P น่าเชื่อถือมากขึ้น</p></div> : <div className="mt-8"><p className="text-sm font-bold">ประสบการณ์โดยรวม</p><div className="mt-4 flex gap-2">{[1,2,3,4,5].map((n) => <button key={n} onClick={() => setRating(n)} className={`text-4xl transition hover:scale-110 ${n <= rating ? "grayscale-0" : "grayscale opacity-30"}`}>★</button>)}</div><textarea placeholder="เล่าประสบการณ์ของคุณ..." className="mt-8 min-h-32 w-full rounded-2xl border border-neutral-200 bg-neutral-50 p-4 outline-none focus:border-[#c9a227]" /><button disabled={!rating} onClick={() => setSent(true)} className="mt-5 w-full rounded-2xl bg-neutral-900 px-5 py-4 font-black text-white disabled:cursor-not-allowed disabled:opacity-30">ส่งรีวิว</button></div>}</div></div></main>;
+export default async function ReviewPage({ searchParams }: { searchParams: Promise<{ rentalRequestId?: string }> }) {
+  const params = await searchParams;
+  const rentalRequestId = params.rentalRequestId?.trim();
+  if (!rentalRequestId) redirect("/dashboard");
+  const user = await requireVerifiedUserPage(`/review?rentalRequestId=${encodeURIComponent(rentalRequestId)}`);
+  const context = await getReviewContext(user, rentalRequestId);
+  return <ReviewClient initialContext={context} />;
 }
