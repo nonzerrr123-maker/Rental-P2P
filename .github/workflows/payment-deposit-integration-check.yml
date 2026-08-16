@@ -1,0 +1,143 @@
+name: Payment deposit integration check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/**"
+      - ".github/workflows/payment-deposit-integration-check.yml"
+  push:
+    branches: [main]
+    paths:
+      - "my-app/**"
+      - ".github/workflows/payment-deposit-integration-check.yml"
+
+jobs:
+  validate-payment-deposit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: p2p_rental
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd="pg_isready -U postgres -d p2p_rental"
+          --health-interval=5s --health-timeout=5s --health-retries=10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/p2p_rental
+      DATABASE_POOL_MAX: 8
+      KYC_PROVIDER: manual
+      PAYMENT_PROVIDER: sandbox
+      SANDBOX_PAYMENT_ENABLED: true
+      URGENT_RESERVATION_TTL_MINUTES: 15
+      NEXT_TELEMETRY_DISABLED: 1
+    defaults:
+      run:
+        working-directory: my-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Apply schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+      - name: Lint payment scope
+        run: >-
+          npx eslint
+          lib/payments/provider.ts lib/payments/sandbox.ts lib/payments/registry.ts lib/payments/service.ts
+          app/api/payments/checkout/route.ts app/api/payments/sandbox/[paymentId]/confirm/route.ts
+          app/api/admin/payments/route.ts app/api/admin/payments/[paymentId]/refund/route.ts
+          app/checkout/[rentalRequestId]/page.tsx app/checkout/[rentalRequestId]/checkout-client.tsx
+          app/admin/payments/page.tsx app/dashboard/rental-dashboard.tsx
+      - name: Build application
+        run: npm run build
+      - name: Start application
+        run: |
+          nohup npm run start -- -p 3000 >/tmp/payment-next.log 2>&1 &
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/api/health/db >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/payment-next.log; exit 1
+      - name: Register actors
+        run: |
+          for actor in owner borrower stranger admin; do
+            curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register -H 'Content-Type: application/json' --data "{\"displayName\":\"$actor Payment\",\"email\":\"$actor.payment-ci@example.com\",\"password\":\"payment-password-123\"}" >/dev/null
+          done
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE users SET verification_status='VERIFIED' WHERE email LIKE '%.payment-ci@example.com'; UPDATE users SET role='ADMIN' WHERE email='admin.payment-ci@example.com';"
+          for actor in owner borrower stranger admin; do
+            curl --fail --silent -c "/tmp/$actor-payment.txt" -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data "{\"email\":\"$actor.payment-ci@example.com\",\"password\":\"payment-password-123\"}" >/dev/null
+          done
+      - name: Create standard rental waiting for payment
+        run: |
+          curl --fail --silent -b /tmp/owner-payment.txt -X POST http://127.0.0.1:3000/api/rental-items -H 'Content-Type: application/json' --data '{"title":"Payment Camera","category":"กล้อง","description":"payment integration listing","condition":"GOOD","hourlyRate":100,"dailyRate":700,"minimumHours":1,"depositAmount":500,"urgentEnabled":true,"urgentReservationFeeRate":0.05,"province":"ชลบุรี"}' >/tmp/payment-item.json
+          node -e 'const d=require("/tmp/payment-item.json"); if(!d.ok)process.exit(1); require("fs").writeFileSync("/tmp/payment-item-id",d.item.id)'
+          item_id=$(cat /tmp/payment-item-id)
+          curl --fail --silent -b /tmp/borrower-payment.txt -X POST http://127.0.0.1:3000/api/rental-requests -H 'Content-Type: application/json' --data "{\"itemId\":\"$item_id\",\"pricingMode\":\"HOUR\",\"startsAt\":\"2031-01-01T10:00:00Z\",\"endsAt\":\"2031-01-01T12:00:00Z\"}" >/tmp/payment-request.json
+          node -e 'const d=require("/tmp/payment-request.json"); require("fs").writeFileSync("/tmp/payment-request-id",d.request.id)'
+          request_id=$(cat /tmp/payment-request-id)
+          curl --fail --silent -b /tmp/owner-payment.txt -X POST "http://127.0.0.1:3000/api/rental-requests/$request_id/action" -H 'Content-Type: application/json' --data '{"action":"ACCEPT"}' >/dev/null
+          test "$(psql "$DATABASE_URL" -Atc "SELECT status FROM rental_requests WHERE id='$request_id'")" = "WAITING_PAYMENT"
+      - name: Server owns amounts and checkout is idempotent
+        run: |
+          request_id=$(cat /tmp/payment-request-id)
+          curl --fail --silent -b /tmp/borrower-payment.txt -X POST http://127.0.0.1:3000/api/payments/checkout -H 'Content-Type: application/json' --data "{\"rentalRequestId\":\"$request_id\",\"amount\":1,\"status\":\"PAID\",\"payerId\":\"forged\"}" >/tmp/payment-checkout.json
+          node -e 'const d=require("/tmp/payment-checkout.json"); if(!d.ok||d.checkout.requiredAmount!=="700.00"||d.checkout.payments.length!==2)process.exit(1); const t=d.checkout.payments.map(x=>x.type).sort(); if(t.join(",")!=="DEPOSIT,RENTAL")process.exit(1)'
+          test "$(psql "$DATABASE_URL" -Atc "SELECT amount FROM payments WHERE rental_request_id='$request_id' AND type='RENTAL'")" = "200.00"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT amount FROM payments WHERE rental_request_id='$request_id' AND type='DEPOSIT'")" = "500.00"
+          curl --fail --silent -b /tmp/borrower-payment.txt -X POST http://127.0.0.1:3000/api/payments/checkout -H 'Content-Type: application/json' --data "{\"rentalRequestId\":\"$request_id\"}" >/dev/null
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM payments WHERE rental_request_id='$request_id' AND type<>'REFUND'")" = "2"
+          code=$(curl --silent --output /tmp/payment-foreign.json --write-out '%{http_code}' -b /tmp/stranger-payment.txt "http://127.0.0.1:3000/api/payments/checkout?rentalRequestId=$request_id")
+          test "$code" = "403"
+      - name: Payment completion is authoritative and deposit is held
+        run: |
+          request_id=$(cat /tmp/payment-request-id)
+          rental_payment=$(psql "$DATABASE_URL" -Atc "SELECT id FROM payments WHERE rental_request_id='$request_id' AND type='RENTAL'")
+          deposit_payment=$(psql "$DATABASE_URL" -Atc "SELECT id FROM payments WHERE rental_request_id='$request_id' AND type='DEPOSIT'")
+          printf '%s' "$deposit_payment" >/tmp/payment-deposit-id
+          curl --fail --silent -b /tmp/borrower-payment.txt -X POST "http://127.0.0.1:3000/api/payments/sandbox/$rental_payment/confirm" >/dev/null
+          test "$(psql "$DATABASE_URL" -Atc "SELECT status FROM rental_requests WHERE id='$request_id'")" = "WAITING_PAYMENT"
+          curl --fail --silent -b /tmp/borrower-payment.txt -X POST "http://127.0.0.1:3000/api/payments/sandbox/$deposit_payment/confirm" >/tmp/payment-final.json
+          node -e 'const d=require("/tmp/payment-final.json"); if(!d.ok||d.checkout.status!=="PAID"||d.checkout.deposit.status!=="HELD")process.exit(1)'
+          test "$(psql "$DATABASE_URL" -Atc "SELECT status FROM rental_requests WHERE id='$request_id'")" = "PAID"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT status FROM deposits WHERE rental_request_id='$request_id'")" = "HELD"
+          curl --fail --silent -b /tmp/borrower-payment.txt -X POST "http://127.0.0.1:3000/api/payments/sandbox/$deposit_payment/confirm" >/dev/null
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM payment_events WHERE provider='SANDBOX' AND provider_event_id='sandbox:$deposit_payment:succeeded'")" = "1"
+      - name: Urgent checkout collects platform fee and deposit only
+        run: |
+          item_id=$(cat /tmp/payment-item-id)
+          curl --fail --silent -b /tmp/borrower-payment.txt -X POST http://127.0.0.1:3000/api/rental-requests -H 'Content-Type: application/json' --data "{\"itemId\":\"$item_id\",\"pricingMode\":\"HOUR\",\"startsAt\":\"2031-01-10T10:00:00Z\",\"endsAt\":\"2031-01-10T12:00:00Z\",\"isUrgent\":true}" >/tmp/payment-urgent.json
+          node -e 'const d=require("/tmp/payment-urgent.json"); require("fs").writeFileSync("/tmp/payment-urgent-id",d.request.id)'
+          urgent_id=$(cat /tmp/payment-urgent-id)
+          curl --fail --silent -b /tmp/borrower-payment.txt -X POST http://127.0.0.1:3000/api/payments/checkout -H 'Content-Type: application/json' --data "{\"rentalRequestId\":\"$urgent_id\"}" >/tmp/payment-urgent-checkout.json
+          node -e 'const d=require("/tmp/payment-urgent-checkout.json"); const t=d.checkout.payments.map(x=>x.type).sort(); if(t.join(",")!=="DEPOSIT,URGENT_RESERVATION_FEE"||d.checkout.collectionPolicy!=="URGENT_PLATFORM_ONLY")process.exit(1)'
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM payments WHERE rental_request_id='$urgent_id' AND type='RENTAL'")" = "0"
+      - name: Admin can refund sandbox deposit but cannot mark paid
+        run: |
+          deposit_payment=$(cat /tmp/payment-deposit-id)
+          curl --fail --silent -b /tmp/admin-payment.txt -X POST "http://127.0.0.1:3000/api/admin/payments/$deposit_payment/refund" >/tmp/payment-refund.json
+          node -e 'const d=require("/tmp/payment-refund.json"); if(!d.ok||d.refund.type!=="REFUND"||d.refund.status!=="SUCCEEDED")process.exit(1)'
+          request_id=$(cat /tmp/payment-request-id)
+          test "$(psql "$DATABASE_URL" -Atc "SELECT status FROM deposits WHERE rental_request_id='$request_id'")" = "REFUNDED"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT status FROM payments WHERE id='$deposit_payment'")" = "REFUNDED"
+          curl --fail --silent -b /tmp/admin-payment.txt http://127.0.0.1:3000/api/admin/payments >/tmp/payment-admin.json
+          node -e 'const d=require("/tmp/payment-admin.json"); if(!d.ok||d.payments.length<3)process.exit(1)'
+      - name: Render checkout and admin payment UI
+        run: |
+          request_id=$(cat /tmp/payment-request-id)
+          curl --fail --silent -L -b /tmp/borrower-payment.txt "http://127.0.0.1:3000/checkout/$request_id" >/tmp/payment-checkout-page.html
+          grep -q "ชำระเงินการยืม" /tmp/payment-checkout-page.html
+          grep -q "server" /tmp/payment-checkout-page.html
+          curl --fail --silent -L -b /tmp/admin-payment.txt http://127.0.0.1:3000/admin/payments >/tmp/payment-admin-page.html
+          grep -q "PostgreSQL" /tmp/payment-admin-page.html
+          ! grep -q "Mark paid" /tmp/payment-admin-page.html
+      - name: Show log on failure
+        if: failure()
+        run: cat /tmp/payment-next.log || true
