@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
@@ -66,7 +67,8 @@ export function MarketplaceFilters({
     params.delete("radiusKm");
     if (params.get("sort") === "distance") params.delete("sort");
     params.delete("page");
-    router.push(params.size ? `/rent?${params.toString()}` : "/rent");
+    const query = params.toString();
+    router.push(query ? `/rent?${query}` : "/rent");
   };
 
   return (
@@ -196,7 +198,7 @@ export function MarketplaceFilters({
             )}
           </div>
           <div className="flex gap-2">
-            <a href="/rent" className="rounded-xl border px-5 py-3 text-sm font-bold">ล้างตัวกรอง</a>
+            <Link href="/rent" className="rounded-xl border px-5 py-3 text-sm font-bold">ล้างตัวกรอง</Link>
             <button type="submit" className="rounded-xl bg-neutral-900 px-6 py-3 text-sm font-black text-white hover:bg-neutral-800">ค้นหา</button>
           </div>
         </div>
