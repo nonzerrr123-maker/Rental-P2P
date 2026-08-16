@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { authorizationErrorResponse, requireVerifiedUser } from "@/lib/auth/authorization";
 import {
   CommunityError,
+  expireStaleCommunityRequests,
   getCommunityRequest,
   toPublicCommunityRequest,
   updateCommunityRequest,
@@ -39,6 +40,7 @@ export async function PATCH(
   try {
     const user = await requireVerifiedUser();
     const { id } = await params;
+    await expireStaleCommunityRequests();
     let body: unknown;
     try {
       body = await request.json();
