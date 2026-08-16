@@ -2,10 +2,12 @@ import { NextResponse } from "next/server";
 import { authorizationErrorResponse, requireUser } from "@/lib/auth/authorization";
 import { listNotificationsForUser, markAllNotificationsRead } from "@/lib/notifications/service";
 import { synchronizeCommunicationForUser } from "@/lib/rental/communication";
+import { expireStaleUrgentReservations } from "@/lib/rental/urgent";
 
 export async function GET(request: Request) {
   try {
     const user = await requireUser();
+    await expireStaleUrgentReservations();
     await synchronizeCommunicationForUser(user.id);
     const limit = Number(new URL(request.url).searchParams.get("limit") || 50);
     const result = await listNotificationsForUser(user.id, limit);
