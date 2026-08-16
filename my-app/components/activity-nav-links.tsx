@@ -2,10 +2,15 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { BellIcon, MessageIcon } from "@/components/ui/icons";
 
 function Badge({ count }: { count: number }) {
   if (count <= 0) return null;
-  return <span className="ml-1 rounded-full bg-[#c9a227] px-1.5 py-0.5 text-[10px] font-black text-white">{count > 99 ? "99+" : count}</span>;
+  return (
+    <span className="absolute -right-1.5 -top-1.5 min-w-4 rounded-full bg-[var(--gold)] px-1 py-0.5 text-center text-[9px] font-black leading-none text-[var(--ink)] ring-2 ring-white">
+      {count > 99 ? "99+" : count}
+    </span>
+  );
 }
 
 export default function ActivityNavLinks({ compact = false }: { compact?: boolean }) {
@@ -27,11 +32,7 @@ export default function ActivityNavLinks({ compact = false }: { compact?: boolea
         .catch(() => undefined);
     };
 
-    fetch("/api/activity/summary", { cache: "no-store" })
-      .then(async (response) => (response.ok ? response.json() : null))
-      .then((payload) => { if (payload) applyPayload(payload); })
-      .catch(() => undefined);
-
+    refresh();
     const interval = window.setInterval(refresh, 5000);
     const onVisibility = () => { if (!document.hidden) refresh(); };
     document.addEventListener("visibilitychange", onVisibility);
@@ -43,16 +44,16 @@ export default function ActivityNavLinks({ compact = false }: { compact?: boolea
   }, []);
 
   const base = compact
-    ? "rounded-lg border px-3 py-2 text-sm font-bold"
-    : "rounded-xl border bg-white px-4 py-2.5 text-sm font-black";
+    ? "relative grid h-9 w-9 place-items-center rounded-xl border border-[var(--line)] bg-white text-[var(--muted-strong)] hover:border-[var(--gold-line)] hover:text-[var(--ink)]"
+    : "relative inline-flex h-10 items-center gap-2 rounded-xl border border-[var(--line)] bg-white px-3 text-sm font-bold text-[var(--muted-strong)] hover:border-[var(--gold-line)] hover:text-[var(--ink)]";
 
   return (
     <div className="flex items-center gap-2">
       <Link href="/chat" className={base} aria-label={`แชต ยังไม่อ่าน ${chatUnread} ข้อความ`}>
-        💬<span className="hidden sm:inline"> แชต</span><Badge count={chatUnread} />
+        <MessageIcon size={18}/>{!compact && <span>แชต</span>}<Badge count={chatUnread}/>
       </Link>
       <Link href="/notifications" className={base} aria-label={`การแจ้งเตือน ยังไม่อ่าน ${notificationUnread} รายการ`}>
-        🔔<span className="hidden sm:inline"> แจ้งเตือน</span><Badge count={notificationUnread} />
+        <BellIcon size={18}/>{!compact && <span>แจ้งเตือน</span>}<Badge count={notificationUnread}/>
       </Link>
     </div>
   );

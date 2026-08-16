@@ -1,0 +1,125 @@
+name: UI foundation integration check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/**"
+      - ".github/workflows/ui-foundation-integration-check.yml"
+  push:
+    branches: [main]
+    paths:
+      - "my-app/**"
+      - ".github/workflows/ui-foundation-integration-check.yml"
+
+jobs:
+  validate-ui-foundation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: p2p_rental
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d p2p_rental"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/p2p_rental
+      DATABASE_POOL_MAX: 5
+      KYC_PROVIDER: manual
+      NEXT_TELEMETRY_DISABLED: 1
+    defaults:
+      run:
+        working-directory: my-app
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Apply PostgreSQL schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+      - name: Seed real homepage fixtures
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO users (id,email,password_hash,display_name,verification_status)
+          VALUES ('10000000-0000-4000-8000-000000000001','ui-owner@example.com','x','UI Owner','VERIFIED'),
+                 ('10000000-0000-4000-8000-000000000002','ui-requester@example.com','x','UI Requester','VERIFIED');
+          INSERT INTO rental_items (id,owner_id,title,category,description,condition,hourly_rate,daily_rate,deposit_amount,urgent_enabled,province,district,subdistrict)
+          VALUES ('20000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','Sony Camera Real Listing','กล้อง','รายการจริงสำหรับ UI gate','GOOD',90,650,1500,true,'ชลบุรี','เมืองชลบุรี','แสนสุข');
+          INSERT INTO community_requests (id,requester_id,title,description,category,province,district,subdistrict,needed_starts_at,needed_ends_at,target_price,is_urgent)
+          VALUES ('30000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000002','หาโปรเจคเตอร์สำหรับงานพรุ่งนี้','ต้องการใช้พรีเซนต์งาน','อิเล็กทรอนิกส์','ชลบุรี','เมืองชลบุรี','แสนสุข',now()+interval '1 day',now()+interval '1 day 3 hours',500,true);
+          SQL
+      - name: Lint task20 scope
+        run: >-
+          npx eslint
+          components/ui/icons.tsx
+          components/ui/primitives.tsx
+          components/site-header.tsx
+          components/mobile-bottom-nav.tsx
+          components/rental-card.tsx
+          components/activity-nav-links.tsx
+          components/auth-nav-actions.tsx
+          app/layout.tsx
+          app/page.tsx
+          app/rent/page.tsx
+          app/products/page.tsx
+          app/products/[id]/page.tsx
+          app/cart/page.tsx
+          app/sell/page.tsx
+      - name: Build application
+        run: npm run build
+      - name: Start application
+        run: |
+          nohup npm run start -- -p 3000 > /tmp/ui-foundation-next.log 2>&1 &
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/api/health/db >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/ui-foundation-next.log
+          exit 1
+      - name: Homepage renders real product data and Borow Borow brand
+        run: |
+          curl --fail --silent http://127.0.0.1:3000/ >/tmp/home.html
+          grep -q 'Borow Borow' /tmp/home.html
+          grep -q 'อยากใช้' /tmp/home.html
+          grep -q 'Sony Camera Real Listing' /tmp/home.html
+          grep -q 'หาโปรเจคเตอร์สำหรับงานพรุ่งนี้' /tmp/home.html
+          ! grep -q 'PlayStation 5' /tmp/home.html
+          ! grep -q '1,200+' /tmp/home.html
+          ! grep -q '850+' /tmp/home.html
+      - name: Rental marketplace shares refined real-data card
+        run: |
+          curl --fail --silent http://127.0.0.1:3000/rent >/tmp/rent.html
+          grep -q 'Sony Camera Real Listing' /tmp/rent.html
+          grep -q 'Borow Borow' /tmp/rent.html
+          ! grep -q '📦' /tmp/rent.html
+      - name: Legacy sales routes leave the rental product flow cleanly
+        run: |
+          for spec in 'products|/rent' 'products/1|/rent' 'sell|/lend' 'cart|/dashboard'; do
+            IFS='|' read -r path target <<< "$spec"
+            headers=$(curl --silent --head http://127.0.0.1:3000/$path)
+            printf '%s' "$headers" | grep -Eq '^HTTP/.* 30[78]'
+            printf '%s' "$headers" | grep -qi "location: $target"
+          done
+      - name: Design system removes legacy P2P metadata and emoji nav icons
+        run: |
+          ! grep -q 'P2P Marketplace' app/layout.tsx
+          ! grep -q '💬\|🔔' components/activity-nav-links.tsx
+          grep -q -- '--canvas: #faf9f6' app/globals.css
+          grep -q 'mobile-bottom-nav' components/mobile-bottom-nav.tsx
+      - name: Show Next.js log on failure
+        if: failure()
+        run: cat /tmp/ui-foundation-next.log || true
