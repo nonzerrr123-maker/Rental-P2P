@@ -1,8 +1,8 @@
 import type { Listing, Notification, Rental, User } from "./schema";
 
 export const mockUsers: User[] = [
-  { id: "u-admin", email: "admin@example.com", displayName: "Super Admin", role: "SUPERADMIN", verificationStatus: "APPROVED", province: "อุบลราชธานี", district: "เมืองอุบลราชธานี", tambon: "ในเมือง", lat: 15.2287, lng: 104.8564, createdAt: "2026-08-10T08:00:00Z" },
-  { id: "u-001", email: "somchai@example.com", displayName: "Somchai", role: "USER", verificationStatus: "APPROVED", province: "อุบลราชธานี", district: "เมืองอุบลราชธานี", tambon: "ในเมือง", lat: 15.2287, lng: 104.8564, createdAt: "2026-08-10T08:00:00Z" },
+  { id: "u-admin", email: "admin@example.com", displayName: "Super Admin", role: "SUPERADMIN", verificationStatus: "VERIFIED", province: "อุบลราชธานี", district: "เมืองอุบลราชธานี", tambon: "ในเมือง", lat: 15.2287, lng: 104.8564, createdAt: "2026-08-10T08:00:00Z" },
+  { id: "u-001", email: "somchai@example.com", displayName: "Somchai", role: "USER", verificationStatus: "VERIFIED", province: "อุบลราชธานี", district: "เมืองอุบลราชธานี", tambon: "ในเมือง", lat: 15.2287, lng: 104.8564, createdAt: "2026-08-10T08:00:00Z" },
 ];
 
 export const mockListings: Listing[] = [
