@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 type NavUser = {
@@ -10,6 +11,7 @@ type NavUser = {
 };
 
 export default function AuthNavActions() {
+  const router = useRouter();
   const [user, setUser] = useState<NavUser | null>(null);
   const [resolved, setResolved] = useState(false);
 
@@ -31,7 +33,9 @@ export default function AuthNavActions() {
 
   const logout = async () => {
     await fetch("/api/auth/logout", { method: "POST" });
-    window.location.assign("/");
+    setUser(null);
+    router.push("/");
+    router.refresh();
   };
 
   if (!resolved) {
