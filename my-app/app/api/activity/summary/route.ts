@@ -2,10 +2,12 @@ import { NextResponse } from "next/server";
 import { authorizationErrorResponse, requireUser } from "@/lib/auth/authorization";
 import { getChatUnreadCount } from "@/lib/chat/service";
 import { getNotificationUnreadCount } from "@/lib/notifications/service";
+import { synchronizeCommunicationForUser } from "@/lib/rental/communication";
 
 export async function GET() {
   try {
     const user = await requireUser();
+    await synchronizeCommunicationForUser(user.id);
     const [chatUnread, notificationUnread] = await Promise.all([
       getChatUnreadCount(user.id),
       getNotificationUnreadCount(user.id),
