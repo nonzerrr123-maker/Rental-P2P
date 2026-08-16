@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { BookingError, getRentalAvailability } from "@/lib/rental/bookings";
+import { expireStaleUrgentReservations } from "@/lib/rental/urgent";
 
 function bookingErrorResponse(error: unknown): NextResponse | null {
   if (!(error instanceof BookingError)) return null;
@@ -20,6 +21,7 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
+    await expireStaleUrgentReservations(id);
     const url = new URL(request.url);
     const availability = await getRentalAvailability(
       id,

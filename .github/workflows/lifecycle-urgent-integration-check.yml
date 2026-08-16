@@ -1,0 +1,207 @@
+name: Lifecycle urgent integration check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/**"
+      - ".github/workflows/lifecycle-urgent-integration-check.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "my-app/**"
+      - ".github/workflows/lifecycle-urgent-integration-check.yml"
+
+jobs:
+  validate-lifecycle-urgent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: p2p_rental
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d p2p_rental"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/p2p_rental
+      DATABASE_POOL_MAX: 8
+      ADMIN_EMAIL: superadmin.lifecycle-ci@example.com
+      ADMIN_PASSWORD: lifecycle-ci-superadmin-password
+      KYC_PROVIDER: manual
+      URGENT_RESERVATION_TTL_MINUTES: 15
+      NEXT_TELEMETRY_DISABLED: 1
+
+    defaults:
+      run:
+        working-directory: my-app
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply PostgreSQL schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+
+      - name: Lint lifecycle urgent scope
+        run: >-
+          npx eslint
+          lib/rental/urgent.ts
+          lib/rental/lifecycle.ts
+          app/api/rental-requests/route.ts
+          app/api/rental-requests/[id]/action/route.ts
+          app/api/rental-requests/[id]/decision/route.ts
+          app/api/rental-items/[id]/availability/route.ts
+          app/api/rental-items/[id]/urgent/route.ts
+          app/rent/[id]/urgent-booking-form.tsx
+          app/rent/[id]/page.tsx
+          app/dashboard/page.tsx
+          app/dashboard/rental-dashboard.tsx
+          app/lend/page.tsx
+          app/lend/urgent-listing-manager.tsx
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start application
+        run: |
+          nohup npm run start -- -p 3000 > /tmp/lifecycle-next.log 2>&1 &
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/api/health/db >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/lifecycle-next.log
+          exit 1
+
+      - name: Register lifecycle actors
+        run: |
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register -H 'Content-Type: application/json' --data '{"displayName":"Urgent Owner","email":"owner.lifecycle-ci@example.com","password":"owner-lifecycle-password"}' >/dev/null
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register -H 'Content-Type: application/json' --data '{"displayName":"Urgent Borrower One","email":"b1.lifecycle-ci@example.com","password":"borrower-one-password"}' >/dev/null
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register -H 'Content-Type: application/json' --data '{"displayName":"Urgent Borrower Two","email":"b2.lifecycle-ci@example.com","password":"borrower-two-password"}' >/dev/null
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register -H 'Content-Type: application/json' --data '{"displayName":"Lifecycle Stranger","email":"stranger.lifecycle-ci@example.com","password":"stranger-password"}' >/dev/null
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE users SET verification_status='VERIFIED' WHERE email LIKE '%.lifecycle-ci@example.com';"
+
+      - name: Login lifecycle actors
+        run: |
+          curl --fail --silent -c /tmp/lifecycle-owner.txt -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"owner.lifecycle-ci@example.com","password":"owner-lifecycle-password"}' >/dev/null
+          curl --fail --silent -c /tmp/lifecycle-b1.txt -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"b1.lifecycle-ci@example.com","password":"borrower-one-password"}' >/dev/null
+          curl --fail --silent -c /tmp/lifecycle-b2.txt -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"b2.lifecycle-ci@example.com","password":"borrower-two-password"}' >/dev/null
+          curl --fail --silent -c /tmp/lifecycle-stranger.txt -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"stranger.lifecycle-ci@example.com","password":"stranger-password"}' >/dev/null
+
+      - name: Create urgent-enabled listing
+        run: |
+          curl --fail --silent -b /tmp/lifecycle-owner.txt -X POST http://127.0.0.1:3000/api/rental-items \
+            -H 'Content-Type: application/json' \
+            --data '{"title":"Urgent Test Camera","category":"กล้อง","description":"กล้องสำหรับทดสอบ lifecycle และ urgent reservation แบบจริง","condition":"GOOD","hourlyRate":80,"dailyRate":650,"minimumHours":2,"depositAmount":3000,"urgentEnabled":true,"urgentReservationFeeRate":0.05,"province":"ชลบุรี"}' >/tmp/lifecycle-item.json
+          node -e 'const d=require("/tmp/lifecycle-item.json"); if(!d.ok || !d.item.urgentEnabled) process.exit(1); require("fs").writeFileSync("/tmp/lifecycle-item-id",d.item.id)'
+
+      - name: Owner can toggle urgent availability
+        run: |
+          item_id=$(cat /tmp/lifecycle-item-id)
+          curl --fail --silent -b /tmp/lifecycle-owner.txt -X PATCH "http://127.0.0.1:3000/api/rental-items/$item_id/urgent" -H 'Content-Type: application/json' --data '{"enabled":false}' >/tmp/lifecycle-toggle-off.json
+          node -e 'const d=require("/tmp/lifecycle-toggle-off.json"); if(!d.ok || d.item.urgentEnabled) process.exit(1)'
+          code=$(curl --silent --output /tmp/lifecycle-urgent-off.json --write-out '%{http_code}' -b /tmp/lifecycle-b1.txt -X POST http://127.0.0.1:3000/api/rental-requests -H 'Content-Type: application/json' --data "{\"itemId\":\"$item_id\",\"pricingMode\":\"HOUR\",\"startsAt\":\"2030-10-01T10:00:00Z\",\"endsAt\":\"2030-10-01T12:00:00Z\",\"isUrgent\":true}")
+          test "$code" = "409"
+          curl --fail --silent -b /tmp/lifecycle-owner.txt -X PATCH "http://127.0.0.1:3000/api/rental-items/$item_id/urgent" -H 'Content-Type: application/json' --data '{"enabled":true,"feeRate":0.05}' >/tmp/lifecycle-toggle-on.json
+          node -e 'const d=require("/tmp/lifecycle-toggle-on.json"); if(!d.item.urgentEnabled || d.item.urgentReservationFeeRate!=="0.0500") process.exit(1)'
+
+      - name: Urgent reservation locks immediately with authoritative fee
+        run: |
+          item_id=$(cat /tmp/lifecycle-item-id)
+          curl --fail --silent -b /tmp/lifecycle-b1.txt -X POST http://127.0.0.1:3000/api/rental-requests \
+            -H 'Content-Type: application/json' \
+            --data "{\"itemId\":\"$item_id\",\"pricingMode\":\"HOUR\",\"startsAt\":\"2030-10-02T10:00:00Z\",\"endsAt\":\"2030-10-02T12:00:00Z\",\"isUrgent\":true,\"urgentReservationFeeAmount\":0.01,\"status\":\"PAID\"}" >/tmp/lifecycle-urgent-one.json
+          node - <<'NODE'
+          const fs=require('fs'); const d=require('/tmp/lifecycle-urgent-one.json');
+          if(!d.ok || !d.request.isUrgent || d.request.status!=='WAITING_PAYMENT' || d.request.unitRate!=='80.00' || d.request.rentalAmount!=='160.00' || d.request.urgentReservationFeeAmount!=='8.00' || !d.request.reservationExpiresAt || !d.request.acceptedAt) process.exit(1);
+          fs.writeFileSync('/tmp/lifecycle-urgent-one-id',d.request.id);
+          NODE
+          item_id=$(cat /tmp/lifecycle-item-id)
+          curl --fail --silent "http://127.0.0.1:3000/api/rental-items/$item_id/availability?from=2030-10-02T10%3A00%3A00Z&to=2030-10-02T12%3A00%3A00Z" >/tmp/lifecycle-urgent-availability.json
+          node -e 'const d=require("/tmp/lifecycle-urgent-availability.json"); if(d.availability.available || !d.availability.conflicts.some(x=>x.kind==="BOOKING")) process.exit(1)'
+
+      - name: Lifecycle endpoint rejects direct status and stranger cancellation
+        run: |
+          request_id=$(cat /tmp/lifecycle-urgent-one-id)
+          code=$(curl --silent --output /tmp/lifecycle-paid.json --write-out '%{http_code}' -b /tmp/lifecycle-b1.txt -X POST "http://127.0.0.1:3000/api/rental-requests/$request_id/action" -H 'Content-Type: application/json' --data '{"action":"PAID","status":"PAID"}')
+          test "$code" = "400"
+          node -e 'const d=require("/tmp/lifecycle-paid.json"); if(d.code!=="VALIDATION_ERROR") process.exit(1)'
+          code=$(curl --silent --output /tmp/lifecycle-stranger-cancel.json --write-out '%{http_code}' -b /tmp/lifecycle-stranger.txt -X POST "http://127.0.0.1:3000/api/rental-requests/$request_id/action" -H 'Content-Type: application/json' --data '{"action":"CANCEL"}')
+          test "$code" = "403"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT status FROM rental_requests WHERE id='$request_id'")" = "WAITING_PAYMENT"
+
+      - name: Borrower can cancel pre-payment reservation
+        run: |
+          request_id=$(cat /tmp/lifecycle-urgent-one-id)
+          curl --fail --silent -b /tmp/lifecycle-b1.txt -X POST "http://127.0.0.1:3000/api/rental-requests/$request_id/action" -H 'Content-Type: application/json' --data '{"action":"CANCEL"}' >/tmp/lifecycle-cancelled.json
+          node -e 'const d=require("/tmp/lifecycle-cancelled.json"); if(!d.ok || d.request.status!=="CANCELLED") process.exit(1)'
+          code=$(curl --silent --output /tmp/lifecycle-cancel-again.json --write-out '%{http_code}' -b /tmp/lifecycle-b1.txt -X POST "http://127.0.0.1:3000/api/rental-requests/$request_id/action" -H 'Content-Type: application/json' --data '{"action":"CANCEL"}')
+          test "$code" = "409"
+
+      - name: Normal request remains REQUESTED and lifecycle decision works
+        run: |
+          item_id=$(cat /tmp/lifecycle-item-id)
+          curl --fail --silent -b /tmp/lifecycle-b1.txt -X POST http://127.0.0.1:3000/api/rental-requests -H 'Content-Type: application/json' --data "{\"itemId\":\"$item_id\",\"pricingMode\":\"DAY\",\"startsAt\":\"2030-10-05T10:00:00Z\",\"endsAt\":\"2030-10-06T10:00:00Z\"}" >/tmp/lifecycle-normal.json
+          node -e 'const d=require("/tmp/lifecycle-normal.json"); if(d.request.status!=="REQUESTED" || d.request.isUrgent) process.exit(1); require("fs").writeFileSync("/tmp/lifecycle-normal-id",d.request.id)'
+          request_id=$(cat /tmp/lifecycle-normal-id)
+          curl --fail --silent -b /tmp/lifecycle-owner.txt -X POST "http://127.0.0.1:3000/api/rental-requests/$request_id/action" -H 'Content-Type: application/json' --data '{"action":"ACCEPT"}' >/tmp/lifecycle-normal-accepted.json
+          node -e 'const d=require("/tmp/lifecycle-normal-accepted.json"); if(d.request.status!=="WAITING_PAYMENT") process.exit(1)'
+
+      - name: Concurrent urgent reservations allow exactly one winner
+        run: |
+          item_id=$(cat /tmp/lifecycle-item-id)
+          body="{\"itemId\":\"$item_id\",\"pricingMode\":\"HOUR\",\"startsAt\":\"2030-10-10T10:00:00Z\",\"endsAt\":\"2030-10-10T12:00:00Z\",\"isUrgent\":true}"
+          (curl --silent --output /tmp/lifecycle-race-one.json --write-out '%{http_code}' -b /tmp/lifecycle-b1.txt -X POST http://127.0.0.1:3000/api/rental-requests -H 'Content-Type: application/json' --data "$body" >/tmp/lifecycle-race-one-code) &
+          pid_one=$!
+          (curl --silent --output /tmp/lifecycle-race-two.json --write-out '%{http_code}' -b /tmp/lifecycle-b2.txt -X POST http://127.0.0.1:3000/api/rental-requests -H 'Content-Type: application/json' --data "$body" >/tmp/lifecycle-race-two-code) &
+          pid_two=$!
+          wait "$pid_one"; wait "$pid_two"
+          codes=$(printf '%s\n%s\n' "$(cat /tmp/lifecycle-race-one-code)" "$(cat /tmp/lifecycle-race-two-code)" | sort | tr '\n' ' ')
+          test "$codes" = "201 409 "
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM rental_requests WHERE item_id='$item_id' AND starts_at='2030-10-10T10:00:00Z' AND status='WAITING_PAYMENT'")" = "1"
+
+      - name: Expired urgent hold releases period and records EXPIRED
+        run: |
+          item_id=$(cat /tmp/lifecycle-item-id)
+          winner_id=$(psql "$DATABASE_URL" -Atc "SELECT id FROM rental_requests WHERE item_id='$item_id' AND starts_at='2030-10-10T10:00:00Z' AND status='WAITING_PAYMENT' LIMIT 1")
+          winner_borrower=$(psql "$DATABASE_URL" -Atc "SELECT borrower_id FROM rental_requests WHERE id='$winner_id'")
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE rental_requests SET reservation_expires_at=now()-interval '1 minute' WHERE id='$winner_id';"
+          if test "$winner_borrower" = "$(psql "$DATABASE_URL" -Atc "SELECT id FROM users WHERE email='b1.lifecycle-ci@example.com'")"; then cookie=/tmp/lifecycle-b1.txt; other=/tmp/lifecycle-b2.txt; else cookie=/tmp/lifecycle-b2.txt; other=/tmp/lifecycle-b1.txt; fi
+          curl --fail --silent -b "$cookie" http://127.0.0.1:3000/api/rental-requests >/tmp/lifecycle-after-expiry.json
+          test "$(psql "$DATABASE_URL" -Atc "SELECT status FROM rental_requests WHERE id='$winner_id'")" = "EXPIRED"
+          curl --fail --silent -b "$other" -X POST http://127.0.0.1:3000/api/rental-requests -H 'Content-Type: application/json' --data "{\"itemId\":\"$item_id\",\"pricingMode\":\"HOUR\",\"startsAt\":\"2030-10-10T10:00:00Z\",\"endsAt\":\"2030-10-10T12:00:00Z\",\"isUrgent\":true}" >/tmp/lifecycle-after-release.json
+          node -e 'const d=require("/tmp/lifecycle-after-release.json"); if(!d.ok || d.request.status!=="WAITING_PAYMENT") process.exit(1)'
+
+      - name: Urgent UI and dashboard render lifecycle state
+        run: |
+          item_id=$(cat /tmp/lifecycle-item-id)
+          curl --fail --silent "http://127.0.0.1:3000/rent/$item_id" >/tmp/lifecycle-item-page.html
+          grep -q 'จองยืมด่วน' /tmp/lifecycle-item-page.html
+          curl --fail --silent -b /tmp/lifecycle-b1.txt http://127.0.0.1:3000/dashboard >/tmp/lifecycle-dashboard.html
+          grep -q 'ยืมด่วน' /tmp/lifecycle-dashboard.html
+          grep -q 'ยังไม่ใช่ PAID' /tmp/lifecycle-dashboard.html
+          curl --fail --silent -b /tmp/lifecycle-owner.txt http://127.0.0.1:3000/lend >/tmp/lifecycle-lend.html
+          grep -q 'เปิด / ปิด “ยืมด่วน” ได้ตลอด' /tmp/lifecycle-lend.html
+
+      - name: Show Next.js log on failure
+        if: failure()
+        run: cat /tmp/lifecycle-next.log || true

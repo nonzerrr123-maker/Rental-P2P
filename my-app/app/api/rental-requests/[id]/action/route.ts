@@ -17,7 +17,7 @@ function concurrentDecisionResponse(error: unknown): NextResponse | null {
     : undefined;
   if (code !== "40P01" && code !== "23P01") return null;
   return NextResponse.json(
-    { ok: false, code: "AVAILABILITY_CONFLICT", message: "Another accepted rental blocks this period", fieldErrors: {} },
+    { ok: false, code: "AVAILABILITY_CONFLICT", message: "Another reservation already holds this period", fieldErrors: {} },
     { status: 409 },
   );
 }
@@ -35,8 +35,8 @@ export async function POST(
     } catch {
       return NextResponse.json({ ok: false, code: "INVALID_JSON", message: "Request body must be valid JSON" }, { status: 400 });
     }
-    const decision = body && typeof body === "object" ? (body as Record<string, unknown>).decision : undefined;
-    const rentalRequest = await applyRentalLifecycleAction(user, id, decision);
+    const action = body && typeof body === "object" ? (body as Record<string, unknown>).action : undefined;
+    const rentalRequest = await applyRentalLifecycleAction(user, id, action);
     return NextResponse.json({ ok: true, request: rentalRequest });
   } catch (error) {
     const authResponse = authorizationErrorResponse(error);
@@ -45,7 +45,7 @@ export async function POST(
     if (bookingResponse) return bookingResponse;
     const concurrentResponse = concurrentDecisionResponse(error);
     if (concurrentResponse) return concurrentResponse;
-    console.error("Failed to decide rental request", error);
-    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", message: "Unable to decide rental request" }, { status: 500 });
+    console.error("Failed to apply rental lifecycle action", error);
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", message: "Unable to update rental request" }, { status: 500 });
   }
 }
