@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 const DEFAULT_PERSONA_API_BASE_URL = "https://api.withpersona.com";
 const DEFAULT_WEBHOOK_TOLERANCE_SECONDS = 300;
+const DEFAULT_REQUEST_TIMEOUT_MS = 8000;
 
 export type PersonaConfiguration = {
   apiBaseUrl: string;
@@ -10,6 +11,7 @@ export type PersonaConfiguration = {
   webhookSecret: string;
   apiVersion?: string;
   webhookToleranceSeconds: number;
+  requestTimeoutMs: number;
 };
 
 export type PersonaInquiryStart = {
@@ -55,6 +57,10 @@ export function getPersonaConfiguration(): PersonaConfiguration | null {
       process.env.PERSONA_WEBHOOK_TOLERANCE_SECONDS,
       DEFAULT_WEBHOOK_TOLERANCE_SECONDS,
     ),
+    requestTimeoutMs: positiveInteger(
+      process.env.PERSONA_REQUEST_TIMEOUT_MS,
+      DEFAULT_REQUEST_TIMEOUT_MS,
+    ),
   };
 }
 
@@ -65,6 +71,25 @@ function personaHeaders(config: PersonaConfiguration, idempotencyKey?: string): 
     ...(config.apiVersion ? { "Persona-Version": config.apiVersion } : {}),
     ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
   };
+}
+
+async function fetchPersona(
+  config: PersonaConfiguration,
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  try {
+    return await fetch(url, {
+      ...init,
+      cache: "no-store",
+      signal: AbortSignal.timeout(config.requestTimeoutMs),
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "TimeoutError") {
+      throw new PersonaProviderError(`Persona request timed out after ${config.requestTimeoutMs}ms`);
+    }
+    throw error;
+  }
 }
 
 async function parsePersonaResponse(response: Response): Promise<unknown> {
@@ -88,7 +113,8 @@ export async function createPersonaInquiry(input: {
   userId: string;
   idempotencyKey: string;
 }): Promise<PersonaInquiryStart> {
-  const response = await fetch(
+  const response = await fetchPersona(
+    input.config,
     `${input.config.apiBaseUrl}/api/v1/inquiries?auto-create-one-time-link=true`,
     {
       method: "POST",
@@ -101,7 +127,6 @@ export async function createPersonaInquiry(input: {
           },
         },
       }),
-      cache: "no-store",
     },
   );
 
@@ -126,13 +151,13 @@ export async function generatePersonaOneTimeLink(input: {
   inquiryId: string;
   idempotencyKey: string;
 }): Promise<string> {
-  const response = await fetch(
+  const response = await fetchPersona(
+    input.config,
     `${input.config.apiBaseUrl}/api/v1/inquiries/${encodeURIComponent(input.inquiryId)}/generate-one-time-link`,
     {
       method: "POST",
       headers: personaHeaders(input.config, input.idempotencyKey),
       body: "{}",
-      cache: "no-store",
     },
   );
 
