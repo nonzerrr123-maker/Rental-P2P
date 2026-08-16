@@ -26,7 +26,6 @@ export default function ChatClient({
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const latestMessageIdRef = useRef("");
   const receiptTickRef = useRef(0);
-  latestMessageIdRef.current = messages.at(-1)?.id ?? "";
 
   const selected = useMemo(
     () => conversations.find((conversation) => conversation.id === selectedId) ?? null,
@@ -45,6 +44,10 @@ export default function ChatClient({
     setConversations(next);
     setSelectedId((current) => current || payload.selectedConversationId || next[0]?.id || "");
   };
+
+  useEffect(() => {
+    latestMessageIdRef.current = messages.at(-1)?.id ?? "";
+  }, [messages]);
 
   useEffect(() => {
     let active = true;
