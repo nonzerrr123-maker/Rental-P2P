@@ -9,6 +9,10 @@ import {
   createRentalRequest,
   listRentalRequestsForUser,
 } from "@/lib/rental/bookings";
+import {
+  synchronizeCommunicationForUser,
+  synchronizeRentalRequestCommunication,
+} from "@/lib/rental/communication";
 import { expireStaleUrgentReservations, createUrgentRentalRequest } from "@/lib/rental/urgent";
 
 function bookingErrorResponse(error: unknown): NextResponse | null {
@@ -28,10 +32,19 @@ function wantsUrgent(input: unknown): boolean {
   return Boolean(input && typeof input === "object" && (input as Record<string, unknown>).isUrgent === true);
 }
 
+async function syncCommunicationBestEffort(userId: string): Promise<void> {
+  try {
+    await synchronizeCommunicationForUser(userId);
+  } catch (error) {
+    console.error("Failed to synchronize rental communication", error);
+  }
+}
+
 export async function GET() {
   try {
     const user = await requireUser();
     await expireStaleUrgentReservations();
+    await syncCommunicationBestEffort(user.id);
     const requests = await listRentalRequestsForUser(user.id);
     return NextResponse.json({ ok: true, ...requests });
   } catch (error) {
@@ -61,6 +74,11 @@ export async function POST(request: Request) {
     const rentalRequest = wantsUrgent(body)
       ? await createUrgentRentalRequest(user.id, body)
       : await createRentalRequest(user.id, body);
+    try {
+      await synchronizeRentalRequestCommunication(rentalRequest.id);
+    } catch (error) {
+      console.error("Rental request created but communication sync failed", error);
+    }
     return NextResponse.json({ ok: true, request: rentalRequest }, { status: 201 });
   } catch (error) {
     const authResponse = authorizationErrorResponse(error);
