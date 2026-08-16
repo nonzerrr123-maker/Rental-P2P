@@ -1,22 +1,126 @@
-"use client";
+import Image from "next/image";
+import Link from "next/link";
+import {
+  listMarketplaceFacets,
+  MarketplaceValidationError,
+  parseMarketplaceFilters,
+  searchPublicRentalItems,
+  type MarketplaceFilters,
+} from "@/lib/rental/marketplace";
+import NearbyControls from "./nearby-controls";
 
-import { useMemo, useState } from "react";
+const money = new Intl.NumberFormat("th-TH", { maximumFractionDigits: 2 });
 
-type Listing = { id: string; name: string; owner: string; province: string; district: string; tambon: string; lat: number; lng: number; price: number };
-const listings: Listing[] = [
-  { id: "L-001", name: "PlayStation 5", owner: "Game House", province: "อุบลราชธานี", district: "เมืองอุบลราชธานี", tambon: "ในเมือง", lat: 15.2287, lng: 104.8564, price: 700 },
-  { id: "L-002", name: "เต็นท์ 4 คน", owner: "Camp Ubon", province: "อุบลราชธานี", district: "เมืองอุบลราชธานี", tambon: "แจระแม", lat: 15.238, lng: 104.816, price: 500 },
-  { id: "L-003", name: "กล้อง Sony", owner: "Photo Hub", province: "อุบลราชธานี", district: "วารินชำราบ", tambon: "แสนสุข", lat: 15.184, lng: 104.868, price: 900 },
-  { id: "L-004", name: "จักรยานเสือภูเขา", owner: "Ride Local", province: "อุบลราชธานี", district: "พิบูลมังสาหาร", tambon: "พิบูล", lat: 15.245, lng: 105.226, price: 300 },
-];
-const haversine = (a: number, b: number, c: number, d: number) => { const R = 6371, p = Math.PI / 180; const x = (c-a)*p, y = (d-b)*p; const q = Math.sin(x/2)**2 + Math.cos(a*p)*Math.cos(c*p)*Math.sin(y/2)**2; return 2*R*Math.asin(Math.sqrt(q)); };
+type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
-export default function LocationPage() {
-  const [mode, setMode] = useState<"10"|"20"|"50"|"tambon"|"province">("10");
-  const [tambon, setTambon] = useState("ในเมือง");
-  const [province, setProvince] = useState("อุบลราชธานี");
-  const [origin, setOrigin] = useState({ lat: 15.2287, lng: 104.8564, label: "ตำแหน่งทดสอบ" });
-  const results = useMemo(() => listings.map(x => ({ ...x, distance: haversine(origin.lat, origin.lng, x.lat, x.lng) })).filter(x => mode === "province" ? x.province === province : mode === "tambon" ? x.tambon === tambon : x.distance <= Number(mode)).sort((a,b) => a.distance-b.distance), [mode,tambon,province,origin]);
-  const useLocation = () => { if (!navigator.geolocation) return; navigator.geolocation.getCurrentPosition(p => setOrigin({ lat: p.coords.latitude, lng: p.coords.longitude, label: "ตำแหน่งปัจจุบัน" }), () => alert("ไม่สามารถเข้าถึงตำแหน่งได้")); };
-  return <main className="min-h-screen bg-[#f7f7f5] text-neutral-900"><header className="border-b bg-white"><div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-5"><a href="/" className="text-2xl font-black">P2P<span className="text-[#c9a227]">.</span></a><a href="/rent" className="rounded-full bg-neutral-900 px-4 py-2 text-sm font-bold text-white">ยืมของ</a></div></header><div className="mx-auto max-w-6xl px-6 py-10"><span className="text-xs font-black tracking-[3px] text-[#a58316]">NEARBY RENTALS</span><h1 className="mt-2 text-4xl font-black">ค้นหาของใกล้คุณ</h1><p className="mt-2 text-neutral-500">เลือกค้นหาตามระยะทาง ตำบล หรือจังหวัด</p><section className="mt-7 rounded-3xl border bg-white p-5 shadow-sm"><div className="flex flex-wrap gap-2">{(["10","20","50","tambon","province"] as const).map(x => <button key={x} onClick={() => setMode(x)} className={`rounded-full px-4 py-2 text-sm font-bold ${mode === x ? "bg-neutral-900 text-white" : "border hover:border-[#c9a227]"}`}>{x === "tambon" ? "ตำบลนี้" : x === "province" ? "จังหวัดนี้" : `${x} กม.`}</button>)}<button onClick={useLocation} className="rounded-full border border-[#c9a227] px-4 py-2 text-sm font-bold text-[#8c7013]">📍 ใช้ตำแหน่งปัจจุบัน</button></div>{(mode === "tambon" || mode === "province") && <div className="mt-4 grid gap-3 sm:grid-cols-2"><select value={province} onChange={e=>setProvince(e.target.value)} className="rounded-xl border px-4 py-3"><option>อุบลราชธานี</option><option>กรุงเทพมหานคร</option><option>ชลบุรี</option></select>{mode === "tambon" && <select value={tambon} onChange={e=>setTambon(e.target.value)} className="rounded-xl border px-4 py-3"><option>ในเมือง</option><option>แจระแม</option><option>แสนสุข</option></select>}</div>}<p className="mt-4 text-xs text-neutral-400">ตำแหน่งอ้างอิง: {origin.label} · {origin.lat.toFixed(4)}, {origin.lng.toFixed(4)}</p></section><div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{results.map(x=><article key={x.id} className="rounded-3xl border bg-white p-5 shadow-sm transition hover:-translate-y-1 hover:shadow-md"><div className="grid h-40 place-items-center rounded-2xl bg-neutral-100 text-5xl">📦</div><div className="mt-5 flex justify-between gap-3"><div><h2 className="font-black">{x.name}</h2><p className="mt-1 text-sm text-neutral-500">{x.owner}</p></div><span className="text-sm font-black">฿{x.price}/วัน</span></div><div className="mt-4 flex flex-wrap gap-2 text-xs"><span className="rounded-full bg-[#faf7ed] px-3 py-1 font-bold text-[#8c7013]">📍 {x.distance.toFixed(1)} กม.</span><span className="rounded-full bg-neutral-100 px-3 py-1">ต.{x.tambon}</span><span className="rounded-full bg-neutral-100 px-3 py-1">จ.{x.province}</span></div><a href={`/rent/${x.id}`} className="mt-5 block rounded-xl bg-neutral-900 px-4 py-3 text-center text-sm font-bold text-white">ดูรายละเอียด</a></article>)}{results.length === 0 && <div className="col-span-full rounded-3xl border bg-white p-12 text-center"><p className="font-black">ยังไม่พบของในพื้นที่นี้</p><p className="mt-1 text-sm text-neutral-500">ลองเพิ่มระยะทางหรือเปลี่ยนพื้นที่ค้นหา</p></div>}</div></div></main>;
+function toUrlSearchParams(input: Record<string, string | string[] | undefined>) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(input)) {
+    if (Array.isArray(value)) value.forEach((entry) => params.append(key, entry));
+    else if (value !== undefined) params.set(key, value);
+  }
+  if (!params.has("limit")) params.set("limit", "12");
+  return params;
+}
+
+function locationText(item: { province: string; district: string | null; subdistrict: string | null }) {
+  return [item.subdistrict, item.district, item.province].filter(Boolean).join(" · ");
+}
+
+function controlsInitial(filters: MarketplaceFilters) {
+  return {
+    province: filters.province,
+    district: filters.district,
+    subdistrict: filters.subdistrict,
+    urgent: filters.urgent,
+    latitude: filters.latitude,
+    longitude: filters.longitude,
+    radiusKm: filters.radiusKm,
+  };
+}
+
+export default async function LocationPage({ searchParams }: { searchParams: SearchParams }) {
+  const resolved = await searchParams;
+  const params = toUrlSearchParams(resolved);
+  let filters: MarketplaceFilters;
+  let validationMessage = "";
+
+  try {
+    filters = parseMarketplaceFilters(params);
+  } catch (error) {
+    if (!(error instanceof MarketplaceValidationError)) throw error;
+    validationMessage = Object.values(error.fieldErrors)[0] ?? "ตัวกรองพื้นที่ไม่ถูกต้อง";
+    filters = parseMarketplaceFilters(new URLSearchParams("limit=12"));
+  }
+
+  const [result, facets] = await Promise.all([
+    searchPublicRentalItems(filters),
+    listMarketplaceFacets(),
+  ]);
+
+  return (
+    <main className="min-h-screen bg-[#f7f7f5] text-neutral-950">
+      <header className="border-b bg-white">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-6 py-5">
+          <Link href="/" className="text-2xl font-black">Borow Borow<span className="text-[#c9a227]">.</span></Link>
+          <div className="flex gap-2">
+            <Link href="/lend/location" className="rounded-xl border px-4 py-2 text-sm font-bold">จัดการตำแหน่งของฉัน</Link>
+            <Link href="/rent" className="rounded-xl bg-neutral-950 px-4 py-2 text-sm font-bold text-white">Marketplace</Link>
+          </div>
+        </div>
+      </header>
+
+      <section className="border-b bg-white px-6 py-12">
+        <div className="mx-auto max-w-7xl">
+          <p className="text-xs font-black tracking-[0.28em] text-[#9d7d13]">REAL NEARBY RENTALS</p>
+          <h1 className="mt-3 text-4xl font-black tracking-tight md:text-5xl">ค้นหาของใกล้คุณจากรายการจริง</h1>
+          <p className="mt-4 max-w-3xl text-neutral-500">ใช้ตำแหน่งอุปกรณ์เพื่อค้นหา 5–50 กม. หรือเลือกจังหวัด/อำเภอ/ตำบลแทนได้ ระบบคำนวณระยะทางฝั่ง server และไม่เปิดพิกัดจริงของเจ้าของต่อสาธารณะ</p>
+          <div className="mt-8"><NearbyControls initial={controlsInitial(filters)} provinces={facets.provinces} /></div>
+          {validationMessage && <p className="mt-3 rounded-xl bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">{validationMessage} — แสดงผลเริ่มต้นแทน</p>}
+        </div>
+      </section>
+
+      <section className="mx-auto max-w-7xl px-6 py-10">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="text-2xl font-black">ผลการค้นหา Nearby</h2>
+            <p className="mt-1 text-sm text-neutral-500">พบ {money.format(result.total)} รายการจาก PostgreSQL</p>
+          </div>
+          {filters.radiusKm !== null && <span className="rounded-full bg-[#faf5df] px-4 py-2 text-sm font-black text-[#806515]">📍 {filters.radiusKm} กม. · ใกล้สุดก่อน</span>}
+        </div>
+
+        {result.items.length ? (
+          <div className="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {result.items.map((item) => (
+              <article key={item.id} className="overflow-hidden rounded-3xl border bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-lg">
+                <Link href={`/rent/${item.id}`} className="block">
+                  <div className="relative aspect-[4/3] bg-neutral-100">
+                    {item.coverImageUrl ? <Image src={item.coverImageUrl} alt={item.title} fill unoptimized sizes="(max-width:640px) 100vw, 25vw" className="object-cover" /> : <div className="grid h-full place-items-center text-5xl text-neutral-300">📦</div>}
+                    {item.urgentAvailableNow && <span className="absolute left-3 top-3 rounded-full bg-neutral-950 px-3 py-1.5 text-xs font-black text-white">⚡ ยืมด่วน · ว่างตอนนี้</span>}
+                    {item.distanceKm !== null && <span className="absolute bottom-3 right-3 rounded-full bg-white/95 px-3 py-1.5 text-xs font-black shadow">{item.distanceKm.toFixed(1)} กม.</span>}
+                  </div>
+                  <div className="p-5">
+                    <p className="text-xs font-black text-[#9d7d13]">{item.category}</p>
+                    <h3 className="mt-2 line-clamp-2 text-lg font-black">{item.title}</h3>
+                    <p className="mt-2 truncate text-xs text-neutral-500">📍 {locationText(item)}</p>
+                    <p className="mt-2 text-sm text-neutral-600">{item.owner.displayName} {item.owner.verified && "✓"}</p>
+                    <div className="mt-4 flex flex-wrap gap-3 border-t pt-4 text-sm">
+                      {item.hourlyRate && <p><b>฿{money.format(Number(item.hourlyRate))}</b> <span className="text-xs text-neutral-500">/ชม.</span></p>}
+                      {item.dailyRate && <p><b>฿{money.format(Number(item.dailyRate))}</b> <span className="text-xs text-neutral-500">/วัน</span></p>}
+                    </div>
+                  </div>
+                </Link>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="mt-6 rounded-3xl border border-dashed bg-white p-12 text-center">
+            <div className="text-5xl">📍</div>
+            <h3 className="mt-4 text-xl font-black">ยังไม่พบของในพื้นที่นี้</h3>
+            <p className="mt-2 text-sm text-neutral-500">ลองเพิ่มระยะทางหรือเลือกพื้นที่อื่น ไม่มีข้อมูล mock ถูกนำมาแสดงแทน</p>
+          </div>
+        )}
+      </section>
+    </main>
+  );
 }
