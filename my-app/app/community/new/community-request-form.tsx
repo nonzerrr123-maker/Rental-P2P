@@ -6,6 +6,11 @@ import { useState, type FormEvent } from "react";
 
 const inputClass = "mt-2 w-full rounded-xl border border-neutral-300 bg-white px-4 py-3 font-normal outline-none focus:border-[#c9a227] focus:ring-2 focus:ring-[#c9a227]/15";
 
+function FieldError({ name, errors }: { name: string; errors: Record<string, string> }) {
+  const message = errors[name];
+  return message ? <p className="mt-1 text-xs font-semibold text-red-600">{message}</p> : null;
+}
+
 export default function CommunityRequestForm() {
   const router = useRouter();
   const [submitting, setSubmitting] = useState(false);
@@ -80,14 +85,12 @@ export default function CommunityRequestForm() {
     }
   };
 
-  const FieldError = ({ name }: { name: string }) => errors[name] ? <p className="mt-1 text-xs font-semibold text-red-600">{errors[name]}</p> : null;
-
   return (
     <form onSubmit={submit} className="mt-8 rounded-3xl border border-neutral-200 bg-white p-5 shadow-sm md:p-8">
       <div className="grid gap-5">
         <label className="text-sm font-bold">ของที่กำลังหา
           <input name="title" maxLength={120} placeholder="เช่น โปรเจคเตอร์ Full HD สำหรับพรุ่งนี้" className={inputClass} />
-          <FieldError name="title" />
+          <FieldError name="title" errors={errors} />
         </label>
         <div className="grid gap-5 md:grid-cols-2">
           <label className="text-sm font-bold">หมวดหมู่
@@ -95,23 +98,23 @@ export default function CommunityRequestForm() {
               <option value="">เลือกหมวดหมู่</option>
               {["อิเล็กทรอนิกส์", "กล้องและอุปกรณ์ถ่ายภาพ", "เกม", "แคมป์ปิ้ง", "เครื่องมือ", "กีฬา", "ยานพาหนะและอุปกรณ์", "อื่น ๆ"].map((value) => <option key={value} value={value}>{value}</option>)}
             </select>
-            <FieldError name="category" />
+            <FieldError name="category" errors={errors} />
           </label>
           <label className="text-sm font-bold">งบเป้าหมาย (บาท / ไม่บังคับ)
             <input name="targetPrice" type="number" min="0" max="10000000" step="0.01" placeholder="500" className={inputClass} />
-            <FieldError name="targetPrice" />
+            <FieldError name="targetPrice" errors={errors} />
           </label>
         </div>
         <label className="text-sm font-bold">รายละเอียด
           <textarea name="description" rows={5} maxLength={3000} placeholder="บอกสเปก ของที่ต้องมี การใช้งาน หรือเงื่อนไขที่สำคัญ" className={inputClass} />
-          <FieldError name="description" />
+          <FieldError name="description" errors={errors} />
         </label>
 
         <section className="rounded-2xl bg-neutral-50 p-4 md:p-5">
           <h2 className="font-black">ช่วงเวลาที่ต้องการ</h2>
           <div className="mt-3 grid gap-4 md:grid-cols-2">
-            <label className="text-sm font-bold">เริ่มใช้<input name="neededStartsAt" type="datetime-local" className={inputClass} /><FieldError name="neededStartsAt" /></label>
-            <label className="text-sm font-bold">คืน / สิ้นสุด<input name="neededEndsAt" type="datetime-local" className={inputClass} /><FieldError name="neededEndsAt" /></label>
+            <label className="text-sm font-bold">เริ่มใช้<input name="neededStartsAt" type="datetime-local" className={inputClass} /><FieldError name="neededStartsAt" errors={errors} /></label>
+            <label className="text-sm font-bold">คืน / สิ้นสุด<input name="neededEndsAt" type="datetime-local" className={inputClass} /><FieldError name="neededEndsAt" errors={errors} /></label>
           </div>
         </section>
 
@@ -121,12 +124,12 @@ export default function CommunityRequestForm() {
             <button type="button" disabled={locating} onClick={useCurrentLocation} className="rounded-full border bg-white px-4 py-2 text-xs font-bold disabled:opacity-50">{locating ? "กำลังอ่านตำแหน่ง..." : "📍 ใช้ตำแหน่งปัจจุบัน"}</button>
           </div>
           <div className="mt-3 grid gap-4 md:grid-cols-3">
-            <label className="text-sm font-bold">จังหวัด<input name="province" placeholder="ชลบุรี" maxLength={100} className={inputClass} /><FieldError name="province" /></label>
+            <label className="text-sm font-bold">จังหวัด<input name="province" placeholder="ชลบุรี" maxLength={100} className={inputClass} /><FieldError name="province" errors={errors} /></label>
             <label className="text-sm font-bold">อำเภอ / เขต<input name="district" placeholder="เมืองชลบุรี" maxLength={100} className={inputClass} /></label>
             <label className="text-sm font-bold">ตำบล / แขวง<input name="subdistrict" placeholder="แสนสุข" maxLength={100} className={inputClass} /></label>
           </div>
           {coords.latitude && <p className="mt-3 text-xs font-semibold text-green-700">✓ บันทึกจุดอ้างอิงสำหรับค้นหาระยะทางแล้ว</p>}
-          <FieldError name="locationCoordinates" />
+          <FieldError name="locationCoordinates" errors={errors} />
         </section>
 
         <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-[#c9a227]/40 bg-[#fffaf0] p-4">
