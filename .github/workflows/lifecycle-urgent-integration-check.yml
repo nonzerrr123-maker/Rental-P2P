@@ -198,7 +198,7 @@ jobs:
           grep -q 'จองยืมด่วน' /tmp/lifecycle-item-page.html
           curl --fail --silent -b /tmp/lifecycle-b1.txt http://127.0.0.1:3000/dashboard >/tmp/lifecycle-dashboard.html
           grep -q 'ยืมด่วน' /tmp/lifecycle-dashboard.html
-          grep -q 'ยังไม่ใช่ PAID' /tmp/lifecycle-dashboard.html
+          grep -q 'รอชำระเงิน' /tmp/lifecycle-dashboard.html
           curl --fail --silent -b /tmp/lifecycle-owner.txt http://127.0.0.1:3000/lend >/tmp/lifecycle-lend.html
           grep -q 'เปิด / ปิด “ยืมด่วน” ได้ตลอด' /tmp/lifecycle-lend.html
 
