@@ -9,6 +9,7 @@ import {
   createRentalRequest,
   listRentalRequestsForUser,
 } from "@/lib/rental/bookings";
+import { expireStaleUrgentReservations, createUrgentRentalRequest } from "@/lib/rental/urgent";
 
 function bookingErrorResponse(error: unknown): NextResponse | null {
   if (!(error instanceof BookingError)) return null;
@@ -23,9 +24,14 @@ function bookingErrorResponse(error: unknown): NextResponse | null {
   );
 }
 
+function wantsUrgent(input: unknown): boolean {
+  return Boolean(input && typeof input === "object" && (input as Record<string, unknown>).isUrgent === true);
+}
+
 export async function GET() {
   try {
     const user = await requireUser();
+    await expireStaleUrgentReservations();
     const requests = await listRentalRequestsForUser(user.id);
     return NextResponse.json({ ok: true, ...requests });
   } catch (error) {
@@ -51,7 +57,10 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    const rentalRequest = await createRentalRequest(user.id, body);
+    await expireStaleUrgentReservations();
+    const rentalRequest = wantsUrgent(body)
+      ? await createUrgentRentalRequest(user.id, body)
+      : await createRentalRequest(user.id, body);
     return NextResponse.json({ ok: true, request: rentalRequest }, { status: 201 });
   } catch (error) {
     const authResponse = authorizationErrorResponse(error);
