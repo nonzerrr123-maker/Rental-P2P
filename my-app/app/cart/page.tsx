@@ -1,6 +1,5 @@
-"use client";
+import { redirect } from "next/navigation";
 
-import { useState } from "react";
-
-const items=[{id:1,name:"MacBook Pro M2",price:32900,emoji:"💻"},{id:3,name:"PlayStation 5",price:15900,emoji:"🎮"}];
-export default function CartPage(){const [selected,setSelected]=useState<number[]>(items.map(i=>i.id));const total=items.filter(i=>selected.includes(i.id)).reduce((s,i)=>s+i.price,0);return <main className="min-h-screen bg-gray-50"><header className="bg-black px-[6%] py-6 text-white"><div className="mx-auto flex max-w-5xl justify-between"><a href="/" className="text-3xl font-black">P2P<span className="text-[#D4AF37]">.</span></a><a href="/products">เลือกซื้อสินค้า</a></div></header><section className="px-5 py-12"><div className="mx-auto max-w-5xl"><h1 className="text-4xl font-black">ตะกร้าสินค้า</h1><div className="mt-8 grid gap-6 md:grid-cols-[1fr_320px]"> <div className="space-y-4">{items.map(i=><div key={i.id} className="flex items-center gap-4 rounded-xl border bg-white p-5"><input type="checkbox" checked={selected.includes(i.id)} onChange={()=>setSelected(s=>s.includes(i.id)?s.filter(x=>x!==i.id):[...s,i.id])} className="h-5 w-5"/><div className="flex h-20 w-20 items-center justify-center rounded-lg bg-gray-100 text-4xl">{i.emoji}</div><div className="flex-1"><h2 className="font-bold">{i.name}</h2><p className="mt-1 text-xl font-black">฿{i.price.toLocaleString()}</p></div></div>)}</div><aside className="h-fit rounded-xl border bg-white p-6"><h2 className="text-xl font-bold">สรุปคำสั่งซื้อ</h2><div className="mt-5 flex justify-between border-t pt-5"><span>ยอดรวม</span><strong className="text-2xl">฿{total.toLocaleString()}</strong></div><button disabled={!selected.length} className="mt-6 w-full rounded-lg bg-black py-3.5 font-bold text-white disabled:opacity-40">ไปชำระเงิน</button><p className="mt-4 text-xs leading-5 text-gray-400">ระบบชำระเงินจริงจะเชื่อมต่อในขั้นตอน Backend</p></aside></div></div></section></main>}
+export default function LegacyCartPage() {
+  redirect("/dashboard");
+}
