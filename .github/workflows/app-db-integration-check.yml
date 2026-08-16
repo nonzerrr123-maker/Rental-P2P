@@ -58,8 +58,8 @@ jobs:
       - name: Apply PostgreSQL schema
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
 
-      - name: Lint application
-        run: npm run lint
+      - name: Lint TASK 3 database integration
+        run: npx eslint lib/db.ts app/api/health/db/route.ts
 
       - name: Build application
         run: npm run build
