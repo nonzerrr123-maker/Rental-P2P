@@ -1,0 +1,170 @@
+name: Rental listing integration check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/**"
+      - ".github/workflows/rental-listing-integration-check.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "my-app/**"
+      - ".github/workflows/rental-listing-integration-check.yml"
+
+jobs:
+  validate-rental-listing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: p2p_rental
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d p2p_rental"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/p2p_rental
+      DATABASE_POOL_MAX: 5
+      ADMIN_EMAIL: superadmin.listing-ci@example.com
+      ADMIN_PASSWORD: listing-ci-superadmin-password
+      KYC_PROVIDER: manual
+      NEXT_TELEMETRY_DISABLED: 1
+
+    defaults:
+      run:
+        working-directory: my-app
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply PostgreSQL schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+
+      - name: Lint rental listing scope
+        run: >-
+          npx eslint
+          lib/rental/listings.ts
+          app/api/rental-items/route.ts
+          app/api/rental-items/mine/route.ts
+          app/lend/page.tsx
+          app/lend/lend-form.tsx
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start application
+        run: |
+          nohup npm run start -- -p 3000 > /tmp/rental-listing-next.log 2>&1 &
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/api/health/db >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/rental-listing-next.log
+          exit 1
+
+      - name: Guest cannot create listing
+        run: |
+          code=$(curl --silent --output /tmp/listing-guest.json --write-out "%{http_code}" -X POST http://127.0.0.1:3000/api/rental-items \
+            -H 'Content-Type: application/json' \
+            --data '{"title":"Guest Camera"}')
+          test "$code" = "401"
+          node -e 'const d=require("/tmp/listing-guest.json"); if(d.code!=="UNAUTHENTICATED") process.exit(1)'
+
+      - name: Register user and reject unverified listing
+        run: |
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register \
+            -H 'Content-Type: application/json' \
+            --data '{"displayName":"Listing User","email":"listing-ci@example.com","password":"correct-horse-123"}' >/tmp/listing-register.json
+          curl --fail --silent -c /tmp/listing-user-cookies.txt -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"listing-ci@example.com","password":"correct-horse-123"}' >/tmp/listing-login.json
+          code=$(curl --silent --output /tmp/listing-unverified.json --write-out "%{http_code}" -b /tmp/listing-user-cookies.txt -X POST http://127.0.0.1:3000/api/rental-items \
+            -H 'Content-Type: application/json' \
+            --data '{"title":"Sony Camera"}')
+          test "$code" = "403"
+          node -e 'const d=require("/tmp/listing-unverified.json"); if(d.code!=="VERIFICATION_REQUIRED") process.exit(1)'
+
+      - name: Verify user for listing tests
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE users SET verification_status='VERIFIED' WHERE email='listing-ci@example.com';"
+          user_id=$(psql "$DATABASE_URL" -Atc "SELECT id FROM users WHERE email='listing-ci@example.com'")
+          test -n "$user_id"
+          printf '%s' "$user_id" >/tmp/listing-user-id
+
+      - name: Reject invalid pricing and location
+        run: |
+          code=$(curl --silent --output /tmp/listing-no-price.json --write-out "%{http_code}" -b /tmp/listing-user-cookies.txt -X POST http://127.0.0.1:3000/api/rental-items \
+            -H 'Content-Type: application/json' \
+            --data '{"title":"Sony Camera","category":"กล้อง","description":"กล้องสภาพดีพร้อมแบตเตอรี่","condition":"GOOD","minimumHours":1,"depositAmount":1000,"province":"ชลบุรี"}')
+          test "$code" = "400"
+          node -e 'const d=require("/tmp/listing-no-price.json"); if(d.code!=="VALIDATION_ERROR" || !d.fieldErrors.pricing) process.exit(1)'
+
+          code=$(curl --silent --output /tmp/listing-location.json --write-out "%{http_code}" -b /tmp/listing-user-cookies.txt -X POST http://127.0.0.1:3000/api/rental-items \
+            -H 'Content-Type: application/json' \
+            --data '{"title":"Sony Camera","category":"กล้อง","description":"กล้องสภาพดีพร้อมแบตเตอรี่","condition":"GOOD","dailyRate":300,"minimumHours":1,"depositAmount":1000,"province":"ชลบุรี","latitude":13.3}')
+          test "$code" = "400"
+          node -e 'const d=require("/tmp/listing-location.json"); if(!d.fieldErrors.locationCoordinates) process.exit(1)'
+
+      - name: Create real listing and ignore client owner id
+        run: |
+          curl --fail --silent -b /tmp/listing-user-cookies.txt -X POST http://127.0.0.1:3000/api/rental-items \
+            -H 'Content-Type: application/json' \
+            --data '{"ownerId":"00000000-0000-0000-0000-000000000001","title":"Sony A7III","category":"กล้องและอุปกรณ์ถ่ายภาพ","description":"กล้องสภาพดี พร้อมแบตเตอรี่สองก้อนและสายคล้อง","condition":"GOOD","hourlyRate":80,"dailyRate":650,"minimumHours":2,"depositAmount":3000,"urgentEnabled":true,"urgentReservationFeeRate":0.05,"province":"ชลบุรี","district":"เมืองชลบุรี","subdistrict":"แสนสุข","locationLabel":"ใกล้บางแสน","latitude":13.2858,"longitude":100.9242}' >/tmp/listing-created.json
+          node -e 'const d=require("/tmp/listing-created.json"); if(!d.ok || d.item.title!=="Sony A7III" || d.item.status!=="ACTIVE" || !d.item.urgentEnabled) process.exit(1); require("fs").writeFileSync("/tmp/listing-id",d.item.id); require("fs").writeFileSync("/tmp/response-owner-id",d.item.ownerId)'
+          test "$(cat /tmp/response-owner-id)" = "$(cat /tmp/listing-user-id)"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT owner_id FROM rental_items WHERE id='$(cat /tmp/listing-id)'")" = "$(cat /tmp/listing-user-id)"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT hourly_rate || '|' || daily_rate || '|' || minimum_hours || '|' || urgent_enabled || '|' || province FROM rental_items WHERE id='$(cat /tmp/listing-id)'")" = "80.00|650.00|2|t|ชลบุรี"
+
+      - name: Owner endpoint returns only current users listings
+        run: |
+          curl --fail --silent -b /tmp/listing-user-cookies.txt http://127.0.0.1:3000/api/rental-items/mine >/tmp/listing-mine.json
+          node -e 'const d=require("/tmp/listing-mine.json"); if(!d.ok || d.items.length!==1 || d.items[0].title!=="Sony A7III") process.exit(1)'
+
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register \
+            -H 'Content-Type: application/json' \
+            --data '{"displayName":"Other Owner","email":"listing-other@example.com","password":"correct-horse-456"}' >/dev/null
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE users SET verification_status='VERIFIED' WHERE email='listing-other@example.com';"
+          curl --fail --silent -c /tmp/listing-other-cookies.txt -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"listing-other@example.com","password":"correct-horse-456"}' >/dev/null
+          curl --fail --silent -b /tmp/listing-other-cookies.txt -X POST http://127.0.0.1:3000/api/rental-items \
+            -H 'Content-Type: application/json' \
+            --data '{"title":"Other Tent","category":"แคมป์ปิ้ง","description":"เต็นท์สำหรับสองคนสภาพดีมาก","condition":"GOOD","dailyRate":200,"minimumHours":1,"depositAmount":500,"province":"ชลบุรี"}' >/dev/null
+
+          curl --fail --silent -b /tmp/listing-user-cookies.txt http://127.0.0.1:3000/api/rental-items/mine >/tmp/listing-mine-after.json
+          node -e 'const d=require("/tmp/listing-mine-after.json"); if(d.items.length!==1 || d.items.some(x=>x.title==="Other Tent")) process.exit(1)'
+
+      - name: Superadmin can create rental listing
+        run: |
+          curl --fail --silent -c /tmp/listing-admin-cookies.txt -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"superadmin.listing-ci@example.com","password":"listing-ci-superadmin-password"}' >/tmp/listing-admin-login.json
+          curl --fail --silent -b /tmp/listing-admin-cookies.txt -X POST http://127.0.0.1:3000/api/rental-items \
+            -H 'Content-Type: application/json' \
+            --data '{"title":"Admin Test Item","category":"เครื่องมือ","description":"รายการสำหรับทดสอบสิทธิ์ผู้ดูแลระบบ","condition":"LIKE_NEW","dailyRate":100,"minimumHours":1,"depositAmount":0,"province":"ชลบุรี"}' >/tmp/listing-admin-item.json
+          node -e 'const d=require("/tmp/listing-admin-item.json"); if(!d.ok || d.item.title!=="Admin Test Item") process.exit(1)'
+
+      - name: Show Next.js log on failure
+        if: failure()
+        run: cat /tmp/rental-listing-next.log || true
