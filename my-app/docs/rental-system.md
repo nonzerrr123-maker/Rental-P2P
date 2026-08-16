@@ -1,5 +1,7 @@
 # Rental P2P — System Architecture
 
+> MVP implementation scope is defined in [`mvp-scope.md`](./mvp-scope.md). This file contains architecture notes; where the two documents differ during the prototype-to-MVP migration, `mvp-scope.md` is the product-scope source of truth until TASK 2 finalizes the database schema and canonical state model.
+
 ## Product rule
 A user may browse publicly, but may not create a rental listing or submit a rental request until identity verification is complete.
 
@@ -16,6 +18,8 @@ Store only provider reference, status, timestamps, and audit metadata in the mai
 `REQUESTED -> ACCEPTED -> PAID -> PICKUP -> RENTING -> RETURNING -> RETURNED -> COMPLETED`
 
 Alternative terminal states: `REJECTED`, `CANCELLED`, `DISPUTED`.
+
+> The final canonical lifecycle, including payment-waiting/pickup-waiting states, will be normalized in TASK 2 so the database, APIs, and frontend use the same values.
 
 ## Core entities
 
