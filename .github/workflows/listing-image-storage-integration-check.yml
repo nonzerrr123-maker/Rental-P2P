@@ -1,0 +1,215 @@
+name: Listing image storage integration check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/**"
+      - ".github/workflows/listing-image-storage-integration-check.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "my-app/**"
+      - ".github/workflows/listing-image-storage-integration-check.yml"
+
+jobs:
+  validate-listing-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: p2p_rental
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d p2p_rental"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/p2p_rental
+      DATABASE_POOL_MAX: 5
+      ADMIN_EMAIL: superadmin.images-ci@example.com
+      ADMIN_PASSWORD: images-ci-superadmin-password
+      KYC_PROVIDER: manual
+      OBJECT_STORAGE_ENDPOINT: http://127.0.0.1:9000
+      OBJECT_STORAGE_REGION: us-east-1
+      OBJECT_STORAGE_ACCESS_KEY_ID: minioadmin
+      OBJECT_STORAGE_SECRET_ACCESS_KEY: minioadmin
+      OBJECT_STORAGE_BUCKET: rental-images
+      OBJECT_STORAGE_FORCE_PATH_STYLE: "true"
+      OBJECT_STORAGE_REQUEST_TIMEOUT_MS: 10000
+      NEXT_TELEMETRY_DISABLED: 1
+
+    defaults:
+      run:
+        working-directory: my-app
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply PostgreSQL schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+
+      - name: Start S3-compatible MinIO
+        working-directory: .
+        run: |
+          docker run -d --name rental-minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio server /data
+          for attempt in {1..40}; do
+            if curl --fail --silent http://127.0.0.1:9000/minio/health/live >/dev/null; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:9000/minio/health/live >/dev/null
+          docker run --rm --network host --entrypoint /bin/sh minio/mc -c \
+            'mc alias set local http://127.0.0.1:9000 minioadmin minioadmin && mc mb --ignore-existing local/rental-images'
+
+      - name: Lint listing image scope
+        run: >-
+          npx eslint
+          lib/storage/s3.ts
+          lib/rental/images.ts
+          app/api/rental-items/[id]/images/route.ts
+          app/api/rental-items/[id]/images/[imageId]/route.ts
+          app/api/rental-images/[imageId]/content/route.ts
+          app/lend/lend-form.tsx
+          app/lend/listing-image-manager.tsx
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start application
+        run: |
+          nohup npm run start -- -p 3000 > /tmp/listing-images-next.log 2>&1 &
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/api/health/db >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/listing-images-next.log
+          exit 1
+
+      - name: Prepare verified owner and listing
+        run: |
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register \
+            -H 'Content-Type: application/json' \
+            --data '{"displayName":"Image Owner","email":"images-owner@example.com","password":"correct-horse-images"}' >/dev/null
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE users SET verification_status='VERIFIED' WHERE email='images-owner@example.com';"
+          curl --fail --silent -c /tmp/images-owner-cookies.txt -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"images-owner@example.com","password":"correct-horse-images"}' >/dev/null
+          curl --fail --silent -b /tmp/images-owner-cookies.txt -X POST http://127.0.0.1:3000/api/rental-items \
+            -H 'Content-Type: application/json' \
+            --data '{"title":"Camera with images","category":"กล้อง","description":"ประกาศสำหรับทดสอบ object storage รูปสินค้า","condition":"GOOD","dailyRate":500,"minimumHours":1,"depositAmount":1000,"province":"ชลบุรี"}' >/tmp/images-item.json
+          node -e 'const d=require("/tmp/images-item.json"); if(!d.ok) process.exit(1); require("fs").writeFileSync("/tmp/images-item-id",d.item.id)'
+
+      - name: Prepare image fixtures
+        run: |
+          printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' | base64 -d >/tmp/one.png
+          cp /tmp/one.png /tmp/two.png
+          printf 'not a real png' >/tmp/fake.png
+
+      - name: Reject guest and spoofed image content
+        run: |
+          item_id=$(cat /tmp/images-item-id)
+          code=$(curl --silent --output /tmp/images-guest.json --write-out "%{http_code}" \
+            -X POST "http://127.0.0.1:3000/api/rental-items/$item_id/images" \
+            -F 'file=@/tmp/one.png;type=image/png')
+          test "$code" = "401"
+
+          code=$(curl --silent --output /tmp/images-fake.json --write-out "%{http_code}" \
+            -b /tmp/images-owner-cookies.txt \
+            -X POST "http://127.0.0.1:3000/api/rental-items/$item_id/images" \
+            -F 'file=@/tmp/fake.png;type=image/png')
+          test "$code" = "415"
+          node -e 'const d=require("/tmp/images-fake.json"); if(!["UNSUPPORTED_IMAGE","IMAGE_TYPE_MISMATCH"].includes(d.code)) process.exit(1)'
+
+      - name: Reject non-owner image upload
+        run: |
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register \
+            -H 'Content-Type: application/json' \
+            --data '{"displayName":"Other User","email":"images-other@example.com","password":"correct-horse-other"}' >/dev/null
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE users SET verification_status='VERIFIED' WHERE email='images-other@example.com';"
+          curl --fail --silent -c /tmp/images-other-cookies.txt -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"images-other@example.com","password":"correct-horse-other"}' >/dev/null
+          item_id=$(cat /tmp/images-item-id)
+          code=$(curl --silent --output /tmp/images-other-upload.json --write-out "%{http_code}" \
+            -b /tmp/images-other-cookies.txt \
+            -X POST "http://127.0.0.1:3000/api/rental-items/$item_id/images" \
+            -F 'file=@/tmp/one.png;type=image/png')
+          test "$code" = "403"
+
+      - name: Upload images to real object storage
+        run: |
+          item_id=$(cat /tmp/images-item-id)
+          curl --fail --silent -b /tmp/images-owner-cookies.txt \
+            -X POST "http://127.0.0.1:3000/api/rental-items/$item_id/images" \
+            -F 'file=@/tmp/one.png;type=image/png' -F 'altText=cover image' >/tmp/image-one.json
+          curl --fail --silent -b /tmp/images-owner-cookies.txt \
+            -X POST "http://127.0.0.1:3000/api/rental-items/$item_id/images" \
+            -F 'file=@/tmp/two.png;type=image/png' -F 'altText=second image' >/tmp/image-two.json
+          node -e 'const a=require("/tmp/image-one.json"),b=require("/tmp/image-two.json"); if(!a.ok||!b.ok||a.image.sortOrder!==0||b.image.sortOrder!==1) process.exit(1); require("fs").writeFileSync("/tmp/image-one-id",a.image.id); require("fs").writeFileSync("/tmp/image-two-id",b.image.id)'
+          test "$(psql "$DATABASE_URL" -Atc "SELECT COUNT(*) FROM rental_images WHERE item_id='$item_id'")" = "2"
+          first_key=$(psql "$DATABASE_URL" -Atc "SELECT storage_key FROM rental_images WHERE id='$(cat /tmp/image-one-id)'")
+          test -n "$first_key"
+          printf '%s' "$first_key" >/tmp/image-one-key
+          docker run --rm --network host --entrypoint /bin/sh minio/mc -c "mc alias set local http://127.0.0.1:9000 minioadmin minioadmin >/dev/null && mc stat 'local/rental-images/$first_key' >/dev/null"
+
+      - name: Serve images through application proxy
+        run: |
+          image_id=$(cat /tmp/image-one-id)
+          curl --fail --silent -D /tmp/image-content-headers.txt "http://127.0.0.1:3000/api/rental-images/$image_id/content" -o /tmp/image-content.png
+          grep -qi '^content-type: image/png' /tmp/image-content-headers.txt
+          cmp /tmp/one.png /tmp/image-content.png
+
+      - name: Reorder images transactionally
+        run: |
+          item_id=$(cat /tmp/images-item-id)
+          one=$(cat /tmp/image-one-id)
+          two=$(cat /tmp/image-two-id)
+          curl --fail --silent -b /tmp/images-owner-cookies.txt \
+            -X PATCH "http://127.0.0.1:3000/api/rental-items/$item_id/images" \
+            -H 'Content-Type: application/json' \
+            --data "{\"orderedImageIds\":[\"$two\",\"$one\"]}" >/tmp/images-reordered.json
+          node -e 'const d=require("/tmp/images-reordered.json"); if(!d.ok||d.images[0].id!==require("fs").readFileSync("/tmp/image-two-id","utf8")||d.images[1].sortOrder!==1) process.exit(1)'
+
+      - name: Delete image from storage and database
+        run: |
+          item_id=$(cat /tmp/images-item-id)
+          image_id=$(cat /tmp/image-one-id)
+          storage_key=$(cat /tmp/image-one-key)
+          curl --fail --silent -b /tmp/images-owner-cookies.txt \
+            -X DELETE "http://127.0.0.1:3000/api/rental-items/$item_id/images/$image_id" >/tmp/image-delete.json
+          node -e 'const d=require("/tmp/image-delete.json"); if(!d.ok) process.exit(1)'
+          test "$(psql "$DATABASE_URL" -Atc "SELECT COUNT(*) FROM rental_images WHERE id='$image_id'")" = "0"
+          if docker run --rm --network host --entrypoint /bin/sh minio/mc -c "mc alias set local http://127.0.0.1:9000 minioadmin minioadmin >/dev/null && mc stat 'local/rental-images/$storage_key' >/dev/null 2>&1"; then
+            echo 'Object still exists after delete'
+            exit 1
+          fi
+
+      - name: Show logs on failure
+        if: failure()
+        working-directory: .
+        run: |
+          cat /tmp/listing-images-next.log || true
+          docker logs rental-minio || true
