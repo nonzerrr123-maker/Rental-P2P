@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 type VerificationStatus = "UNVERIFIED" | "PENDING" | "VERIFIED" | "REJECTED";
 
@@ -19,36 +19,55 @@ type VerificationOverview = {
   latest: VerificationRecord | null;
 };
 
+async function fetchOverview(): Promise<VerificationOverview> {
+  const response = await fetch("/api/verification", { cache: "no-store" });
+  const result = await response.json();
+  if (!response.ok || !result.ok) {
+    throw new Error(result.message ?? "ไม่สามารถโหลดสถานะการยืนยันตัวตนได้");
+  }
+  return {
+    verificationStatus: result.verificationStatus,
+    latest: result.latest,
+  };
+}
+
 export default function VerificationPage() {
   const [overview, setOverview] = useState<VerificationOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState("");
 
-  const loadOverview = useCallback(async () => {
+  const loadOverview = async () => {
     setLoading(true);
     try {
-      const response = await fetch("/api/verification", { cache: "no-store" });
-      const result = await response.json();
-      if (!response.ok || !result.ok) {
-        setMessage(result.message ?? "ไม่สามารถโหลดสถานะการยืนยันตัวตนได้");
-        return;
-      }
-      setOverview({
-        verificationStatus: result.verificationStatus,
-        latest: result.latest,
-      });
+      setOverview(await fetchOverview());
       setMessage("");
-    } catch {
-      setMessage("ไม่สามารถเชื่อมต่อระบบยืนยันตัวตนได้");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "ไม่สามารถเชื่อมต่อระบบยืนยันตัวตนได้");
     } finally {
       setLoading(false);
     }
-  }, []);
+  };
 
   useEffect(() => {
-    void loadOverview();
-  }, [loadOverview]);
+    let active = true;
+    void fetchOverview()
+      .then((nextOverview) => {
+        if (!active) return;
+        setOverview(nextOverview);
+        setMessage("");
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setMessage(error instanceof Error ? error.message : "ไม่สามารถเชื่อมต่อระบบยืนยันตัวตนได้");
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const submit = async () => {
     setSubmitting(true);
