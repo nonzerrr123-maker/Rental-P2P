@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import ActivityNavLinks from "@/components/activity-nav-links";
 
 type NavUser = {
   displayName: string;
@@ -57,6 +58,7 @@ export default function AuthNavActions() {
   return (
     <div className="flex flex-wrap items-center justify-end gap-2">
       <span className="hidden max-w-32 truncate text-sm font-semibold sm:inline">{user.displayName}</span>
+      <ActivityNavLinks compact />
       {isAdmin && <Link href="/admin" className="rounded-lg border px-3 py-2 text-sm font-bold">Admin</Link>}
       <Link href="/dashboard" className="rounded-lg border px-3 py-2 text-sm font-bold">Dashboard</Link>
       <Link href={canRent ? "/lend" : "/verification"} className="rounded-lg bg-[#C9A227] px-3 py-2 text-sm font-black">

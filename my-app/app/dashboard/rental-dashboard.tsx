@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
+import ActivityNavLinks from "@/components/activity-nav-links";
 import type { RentalRequestSummary } from "@/lib/rental/bookings";
 
 const money = new Intl.NumberFormat("th-TH", { maximumFractionDigits: 2 });
@@ -65,12 +66,12 @@ function RequestCard({
         </div>
 
         <div className="flex shrink-0 flex-wrap gap-2">
+          <Link href={`/chat?rentalRequestId=${encodeURIComponent(request.id)}`} className="rounded-xl border border-[#d8c16d] bg-[#fffaf0] px-4 py-2.5 text-sm font-black text-[#806515] hover:bg-[#fff3bf]">💬 แชต</Link>
           {perspective === "LENDER" && request.status === "REQUESTED" && <>
             <button type="button" disabled={busy} onClick={() => onAction(request.id, "REJECT")} className="rounded-xl border border-red-200 px-4 py-2.5 text-sm font-black text-red-600 hover:bg-red-50 disabled:opacity-40">Reject</button>
             <button type="button" disabled={busy} onClick={() => onAction(request.id, "ACCEPT")} className="rounded-xl bg-neutral-950 px-4 py-2.5 text-sm font-black text-white hover:bg-neutral-800 disabled:opacity-40">{busy ? "กำลังบันทึก..." : "Accept"}</button>
           </>}
           {(borrowerCanCancel || lenderCanCancel) && <button type="button" disabled={busy} onClick={() => onAction(request.id, "CANCEL")} className="rounded-xl border px-4 py-2.5 text-sm font-black text-neutral-600 hover:border-red-300 hover:text-red-600 disabled:opacity-40">ยกเลิก</button>}
-          {!((perspective === "LENDER" && request.status === "REQUESTED") || borrowerCanCancel || lenderCanCancel) && <span className="rounded-xl border px-4 py-2 text-xs font-bold text-neutral-400">Chat เปิดใน Phase 7</span>}
         </div>
       </div>
     </article>
@@ -120,11 +121,11 @@ export function RentalDashboard({ displayName, initialIncoming, initialOutgoing 
 
   return (
     <main className="min-h-screen bg-[#f7f7f5] text-neutral-950">
-      <header className="border-b border-neutral-200 bg-white"><div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5"><Link href="/" className="text-2xl font-black">Borow Borow<span className="text-[#c9a227]">.</span></Link><Link href="/rent" className="rounded-full border px-4 py-2 text-sm font-bold">Marketplace</Link></div></header>
+      <header className="border-b border-neutral-200 bg-white"><div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-6 py-5"><Link href="/" className="text-2xl font-black">Borow Borow<span className="text-[#c9a227]">.</span></Link><div className="flex items-center gap-2"><ActivityNavLinks /><Link href="/rent" className="rounded-xl border bg-white px-4 py-2.5 text-sm font-bold">Marketplace</Link></div></div></header>
       <div className="mx-auto max-w-7xl px-6 py-10">
-        <div className="flex flex-col justify-between gap-5 md:flex-row md:items-end"><div><p className="text-xs font-black tracking-[0.25em] text-[#9d7d13]">MY RENTALS</p><h1 className="mt-2 text-4xl font-black">สวัสดี {displayName}</h1><p className="mt-2 text-neutral-500">ติดตาม Booking, ยืมด่วน และ lifecycle จาก PostgreSQL จริง</p></div><div className="flex rounded-xl border bg-white p-1"><button onClick={() => setRole("BORROWER")} className={`rounded-lg px-4 py-2 text-sm font-black ${role === "BORROWER" ? "bg-neutral-950 text-white" : ""}`}>ฉันเป็นผู้ยืม</button><button onClick={() => setRole("LENDER")} className={`rounded-lg px-4 py-2 text-sm font-black ${role === "LENDER" ? "bg-neutral-950 text-white" : ""}`}>ฉันเป็นผู้ให้ยืม</button></div></div>
+        <div className="flex flex-col justify-between gap-5 md:flex-row md:items-end"><div><p className="text-xs font-black tracking-[0.25em] text-[#9d7d13]">MY RENTALS</p><h1 className="mt-2 text-4xl font-black">สวัสดี {displayName}</h1><p className="mt-2 text-neutral-500">ติดตาม Booking, ยืมด่วน, แชต และ lifecycle จาก PostgreSQL จริง</p></div><div className="flex rounded-xl border bg-white p-1"><button onClick={() => setRole("BORROWER")} className={`rounded-lg px-4 py-2 text-sm font-black ${role === "BORROWER" ? "bg-neutral-950 text-white" : ""}`}>ฉันเป็นผู้ยืม</button><button onClick={() => setRole("LENDER")} className={`rounded-lg px-4 py-2 text-sm font-black ${role === "LENDER" ? "bg-neutral-950 text-white" : ""}`}>ฉันเป็นผู้ให้ยืม</button></div></div>
         <div className="mt-8 grid gap-4 sm:grid-cols-3"><div className="rounded-2xl border bg-white p-5"><p className="text-sm text-neutral-500">กำลังดำเนินการ</p><p className="mt-2 text-3xl font-black">{stats.active}</p></div><div className="rounded-2xl border bg-white p-5"><p className="text-sm text-neutral-500">รอชำระเงิน</p><p className="mt-2 text-3xl font-black">{stats.waitingPayment}</p></div><div className="rounded-2xl border bg-white p-5"><p className="text-sm text-neutral-500">มูลค่าที่ล็อกแล้ว</p><p className="mt-2 text-3xl font-black">฿{money.format(stats.acceptedValue)}</p></div></div>
-        <section className="mt-8 overflow-hidden rounded-3xl border border-neutral-200 bg-white"><div className="border-b p-5 md:p-6"><h2 className="text-xl font-black">{role === "LENDER" ? "คำขอที่เข้ามา" : "คำขอที่ฉันส่ง"}</h2><p className="mt-1 text-sm text-neutral-500">การเปลี่ยนสถานะทำผ่าน lifecycle action เท่านั้น ไม่รับค่า status ตรงจาก client</p></div><div className="divide-y divide-neutral-100">{current.map((request) => <RequestCard key={request.id} request={request} perspective={role} onAction={(id, action) => void applyAction(id, action)} busy={busyId === request.id} error={errors[request.id] || ""} />)}{current.length === 0 && <div className="p-12 text-center text-neutral-500">ยังไม่มีคำขอในหมวดนี้</div>}</div></section>
+        <section className="mt-8 overflow-hidden rounded-3xl border border-neutral-200 bg-white"><div className="border-b p-5 md:p-6"><h2 className="text-xl font-black">{role === "LENDER" ? "คำขอที่เข้ามา" : "คำขอที่ฉันส่ง"}</h2><p className="mt-1 text-sm text-neutral-500">เปิดแชตได้ตั้งแต่มีคำขอ และประวัติยังอ่านได้หลังรายการสิ้นสุด</p></div><div className="divide-y divide-neutral-100">{current.map((request) => <RequestCard key={request.id} request={request} perspective={role} onAction={(id, action) => void applyAction(id, action)} busy={busyId === request.id} error={errors[request.id] || ""} />)}{current.length === 0 && <div className="p-12 text-center text-neutral-500">ยังไม่มีคำขอในหมวดนี้</div>}</div></section>
         <div className="mt-6 flex flex-wrap gap-3"><Link href="/lend" className="rounded-xl bg-[#c9a227] px-5 py-3 font-black text-white">+ ลงของให้ยืม</Link><Link href="/rent" className="rounded-xl border bg-white px-5 py-3 font-black">ค้นหาของให้ยืม</Link></div>
       </div>
     </main>

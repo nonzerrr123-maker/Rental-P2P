@@ -1,0 +1,221 @@
+name: Chat notifications integration check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/**"
+      - ".github/workflows/chat-notifications-integration-check.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "my-app/**"
+      - ".github/workflows/chat-notifications-integration-check.yml"
+
+jobs:
+  validate-chat-notifications:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: p2p_rental
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d p2p_rental"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/p2p_rental
+      DATABASE_POOL_MAX: 8
+      KYC_PROVIDER: manual
+      URGENT_RESERVATION_TTL_MINUTES: 15
+      NEXT_TELEMETRY_DISABLED: 1
+
+    defaults:
+      run:
+        working-directory: my-app
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply PostgreSQL schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+
+      - name: Lint chat notification scope
+        run: >-
+          npx eslint
+          lib/chat/service.ts
+          lib/notifications/service.ts
+          lib/rental/communication.ts
+          app/api/conversations/route.ts
+          app/api/conversations/[id]/messages/route.ts
+          app/api/conversations/[id]/read/route.ts
+          app/api/notifications/route.ts
+          app/api/notifications/[id]/read/route.ts
+          app/api/activity/summary/route.ts
+          app/api/rental-requests/route.ts
+          app/api/rental-requests/[id]/action/route.ts
+          app/api/rental-requests/[id]/decision/route.ts
+          app/chat/page.tsx
+          app/chat/chat-client.tsx
+          app/notifications/page.tsx
+          app/dashboard/rental-dashboard.tsx
+          components/activity-nav-links.tsx
+          components/auth-nav-actions.tsx
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start application
+        run: |
+          nohup npm run start -- -p 3000 > /tmp/chat-next.log 2>&1 &
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/api/health/db >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/chat-next.log
+          exit 1
+
+      - name: Register and verify chat actors
+        run: |
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register -H 'Content-Type: application/json' --data '{"displayName":"Chat Owner","email":"owner.chat-ci@example.com","password":"owner-chat-password"}' >/dev/null
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register -H 'Content-Type: application/json' --data '{"displayName":"Chat Borrower","email":"borrower.chat-ci@example.com","password":"borrower-chat-password"}' >/dev/null
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register -H 'Content-Type: application/json' --data '{"displayName":"Chat Stranger","email":"stranger.chat-ci@example.com","password":"stranger-chat-password"}' >/dev/null
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE users SET verification_status='VERIFIED' WHERE email LIKE '%.chat-ci@example.com';"
+          curl --fail --silent -c /tmp/chat-owner.txt -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"owner.chat-ci@example.com","password":"owner-chat-password"}' >/dev/null
+          curl --fail --silent -c /tmp/chat-borrower.txt -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"borrower.chat-ci@example.com","password":"borrower-chat-password"}' >/dev/null
+          curl --fail --silent -c /tmp/chat-stranger.txt -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"stranger.chat-ci@example.com","password":"stranger-chat-password"}' >/dev/null
+
+      - name: Create listing and rental request communication
+        run: |
+          curl --fail --silent -b /tmp/chat-owner.txt -X POST http://127.0.0.1:3000/api/rental-items -H 'Content-Type: application/json' --data '{"title":"Chat Test Camera","category":"กล้อง","description":"รายการสำหรับทดสอบ chat notifications แบบ PostgreSQL จริง","condition":"GOOD","hourlyRate":100,"dailyRate":700,"minimumHours":1,"depositAmount":2000,"urgentEnabled":true,"urgentReservationFeeRate":0.05,"province":"ชลบุรี"}' >/tmp/chat-item.json
+          node -e 'const d=require("/tmp/chat-item.json"); if(!d.ok)process.exit(1); require("fs").writeFileSync("/tmp/chat-item-id",d.item.id)'
+          item_id=$(cat /tmp/chat-item-id)
+          curl --fail --silent -b /tmp/chat-borrower.txt -X POST http://127.0.0.1:3000/api/rental-requests -H 'Content-Type: application/json' --data "{\"itemId\":\"$item_id\",\"pricingMode\":\"HOUR\",\"startsAt\":\"2030-11-01T10:00:00Z\",\"endsAt\":\"2030-11-01T12:00:00Z\"}" >/tmp/chat-request.json
+          node -e 'const d=require("/tmp/chat-request.json"); if(!d.ok||d.request.status!=="REQUESTED")process.exit(1); require("fs").writeFileSync("/tmp/chat-request-id",d.request.id)'
+          request_id=$(cat /tmp/chat-request-id)
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM conversations WHERE rental_request_id='$request_id'")" = "1"
+          conversation_id=$(psql "$DATABASE_URL" -Atc "SELECT id FROM conversations WHERE rental_request_id='$request_id'")
+          printf '%s' "$conversation_id" >/tmp/chat-conversation-id
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM conversation_participants WHERE conversation_id='$conversation_id'")" = "2"
+          curl --fail --silent -b /tmp/chat-owner.txt http://127.0.0.1:3000/api/notifications >/tmp/chat-owner-request-notification.json
+          node -e 'const d=require("/tmp/chat-owner-request-notification.json"); if(!d.items.some(x=>x.type==="RENTAL_REQUESTED"))process.exit(1)'
+
+      - name: Enforce participant access and server sender identity
+        run: |
+          conversation_id=$(cat /tmp/chat-conversation-id)
+          code=$(curl --silent --output /tmp/chat-guest.json --write-out '%{http_code}' "http://127.0.0.1:3000/api/conversations/$conversation_id/messages")
+          test "$code" = "401"
+          code=$(curl --silent --output /tmp/chat-outsider.json --write-out '%{http_code}' -b /tmp/chat-stranger.txt "http://127.0.0.1:3000/api/conversations/$conversation_id/messages")
+          test "$code" = "403"
+          stranger_id=$(psql "$DATABASE_URL" -Atc "SELECT id FROM users WHERE email='stranger.chat-ci@example.com'")
+          curl --fail --silent -b /tmp/chat-borrower.txt -X POST "http://127.0.0.1:3000/api/conversations/$conversation_id/messages" -H 'Content-Type: application/json' --data "{\"body\":\"สวัสดีครับ นัดรับของตรงไหนดี\",\"senderId\":\"$stranger_id\"}" >/tmp/chat-first-message.json
+          node -e 'const d=require("/tmp/chat-first-message.json"); if(!d.ok||d.message.body!=="สวัสดีครับ นัดรับของตรงไหนดี")process.exit(1); require("fs").writeFileSync("/tmp/chat-first-message-id",d.message.id)'
+          borrower_id=$(psql "$DATABASE_URL" -Atc "SELECT id FROM users WHERE email='borrower.chat-ci@example.com'")
+          message_id=$(cat /tmp/chat-first-message-id)
+          test "$(psql "$DATABASE_URL" -Atc "SELECT sender_id FROM messages WHERE id='$message_id'")" = "$borrower_id"
+          code=$(node -e 'process.stdout.write("x".repeat(2001))' | node -e 'let d="";process.stdin.on("data",x=>d+=x).on("end",()=>process.stdout.write(JSON.stringify({body:d})))' | curl --silent --output /tmp/chat-too-long.json --write-out '%{http_code}' -b /tmp/chat-borrower.txt -X POST "http://127.0.0.1:3000/api/conversations/$conversation_id/messages" -H 'Content-Type: application/json' --data-binary @-)
+          test "$code" = "400"
+
+      - name: Track unread counts read receipts and cursors
+        run: |
+          conversation_id=$(cat /tmp/chat-conversation-id)
+          curl --fail --silent -b /tmp/chat-owner.txt http://127.0.0.1:3000/api/activity/summary >/tmp/chat-owner-activity.json
+          echo "owner activity: $(cat /tmp/chat-owner-activity.json)"
+          node -e 'const d=require("/tmp/chat-owner-activity.json"); if(d.chatUnread!==1 || d.notificationUnread<2)process.exit(1)'
+          curl --fail --silent -b /tmp/chat-owner.txt "http://127.0.0.1:3000/api/conversations/$conversation_id/messages?limit=1" >/tmp/chat-owner-messages.json
+          echo "owner messages: $(cat /tmp/chat-owner-messages.json)"
+          node -e 'const d=require("/tmp/chat-owner-messages.json"); if(d.items.length!==1)process.exit(1)'
+          curl --fail --silent -b /tmp/chat-owner.txt -X POST "http://127.0.0.1:3000/api/conversations/$conversation_id/read" >/dev/null
+          curl --fail --silent -b /tmp/chat-owner.txt http://127.0.0.1:3000/api/activity/summary >/tmp/chat-owner-read-activity.json
+          echo "owner activity after read: $(cat /tmp/chat-owner-read-activity.json)"
+          node -e 'const d=require("/tmp/chat-owner-read-activity.json"); if(d.chatUnread!==0)process.exit(1)'
+          first_id=$(cat /tmp/chat-first-message-id)
+          curl --fail --silent -b /tmp/chat-owner.txt -X POST "http://127.0.0.1:3000/api/conversations/$conversation_id/messages" -H 'Content-Type: application/json' --data '{"body":"เจอกันหน้าห้างช่วงสิบโมงได้ครับ"}' >/tmp/chat-reply.json
+          echo "reply: $(cat /tmp/chat-reply.json)"
+          node -e 'const d=require("/tmp/chat-reply.json"); if(!d.ok)process.exit(1); require("fs").writeFileSync("/tmp/chat-reply-id",d.message.id)'
+          curl --fail --silent -b /tmp/chat-borrower.txt "http://127.0.0.1:3000/api/conversations/$conversation_id/messages?after=$first_id&limit=10" >/tmp/chat-after.json
+          echo "after cursor: $(cat /tmp/chat-after.json)"
+          node -e 'const d=require("/tmp/chat-after.json"); if(d.items.length!==1 || d.items[0].body!=="เจอกันหน้าห้างช่วงสิบโมงได้ครับ")process.exit(1)'
+          curl --fail --silent -b /tmp/chat-borrower.txt -X POST "http://127.0.0.1:3000/api/conversations/$conversation_id/read" >/dev/null
+          curl --fail --silent -b /tmp/chat-owner.txt "http://127.0.0.1:3000/api/conversations/$conversation_id/messages?limit=10" >/tmp/chat-receipt.json
+          echo "receipt: $(cat /tmp/chat-receipt.json)"
+          node -e 'const d=require("/tmp/chat-receipt.json"); const m=d.items.find(x=>x.id===require("fs").readFileSync("/tmp/chat-reply-id","utf8")); if(!m?.readByOtherAt)process.exit(1)'
+          reply_id=$(cat /tmp/chat-reply-id)
+          curl --fail --silent -b /tmp/chat-owner.txt "http://127.0.0.1:3000/api/conversations/$conversation_id/messages?before=$reply_id&limit=1" >/tmp/chat-before.json
+          echo "before cursor: $(cat /tmp/chat-before.json)"
+          node -e 'const d=require("/tmp/chat-before.json"); if(d.items.length!==1 || d.items[0].id!==require("fs").readFileSync("/tmp/chat-first-message-id","utf8"))process.exit(1)'
+
+      - name: Enforce notification ownership and idempotency
+        run: |
+          curl --fail --silent -b /tmp/chat-owner.txt http://127.0.0.1:3000/api/notifications >/tmp/chat-owner-notifications.json
+          node -e 'const d=require("/tmp/chat-owner-notifications.json"); const n=d.items.find(x=>x.type==="NEW_MESSAGE"); if(!n)process.exit(1); require("fs").writeFileSync("/tmp/chat-owner-notification-id",n.id)'
+          notification_id=$(cat /tmp/chat-owner-notification-id)
+          code=$(curl --silent --output /tmp/chat-foreign-notification.json --write-out '%{http_code}' -b /tmp/chat-borrower.txt -X POST "http://127.0.0.1:3000/api/notifications/$notification_id/read")
+          test "$code" = "404"
+          curl --fail --silent -b /tmp/chat-owner.txt http://127.0.0.1:3000/api/activity/summary >/dev/null
+          curl --fail --silent -b /tmp/chat-owner.txt http://127.0.0.1:3000/api/activity/summary >/dev/null
+          request_id=$(cat /tmp/chat-request-id)
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.email='owner.chat-ci@example.com' AND n.type='RENTAL_REQUESTED' AND n.related_entity_id='$request_id'")" = "1"
+          curl --fail --silent -b /tmp/chat-owner.txt -X POST "http://127.0.0.1:3000/api/notifications/$notification_id/read" >/dev/null
+
+      - name: Lifecycle notifications and closed chat policy
+        run: |
+          request_id=$(cat /tmp/chat-request-id)
+          conversation_id=$(cat /tmp/chat-conversation-id)
+          curl --fail --silent -b /tmp/chat-owner.txt -X POST "http://127.0.0.1:3000/api/rental-requests/$request_id/action" -H 'Content-Type: application/json' --data '{"action":"ACCEPT"}' >/dev/null
+          curl --fail --silent -b /tmp/chat-borrower.txt http://127.0.0.1:3000/api/notifications >/tmp/chat-accepted-notification.json
+          node -e 'const d=require("/tmp/chat-accepted-notification.json"); if(!d.items.some(x=>x.type==="RENTAL_ACCEPTED"))process.exit(1)'
+          curl --fail --silent -b /tmp/chat-borrower.txt -X POST "http://127.0.0.1:3000/api/rental-requests/$request_id/action" -H 'Content-Type: application/json' --data '{"action":"CANCEL"}' >/dev/null
+          code=$(curl --silent --output /tmp/chat-closed.json --write-out '%{http_code}' -b /tmp/chat-borrower.txt -X POST "http://127.0.0.1:3000/api/conversations/$conversation_id/messages" -H 'Content-Type: application/json' --data '{"body":"ข้อความหลังยกเลิก"}')
+          test "$code" = "409"
+          node -e 'const d=require("/tmp/chat-closed.json"); if(d.code!=="CHAT_CLOSED")process.exit(1)'
+          curl --fail --silent -b /tmp/chat-owner.txt http://127.0.0.1:3000/api/notifications >/tmp/chat-cancelled-notification.json
+          node -e 'const d=require("/tmp/chat-cancelled-notification.json"); if(!d.items.some(x=>x.type==="RENTAL_CANCELLED"))process.exit(1)'
+
+      - name: Urgent reservation and expiry notifications
+        run: |
+          item_id=$(cat /tmp/chat-item-id)
+          curl --fail --silent -b /tmp/chat-borrower.txt -X POST http://127.0.0.1:3000/api/rental-requests -H 'Content-Type: application/json' --data "{\"itemId\":\"$item_id\",\"pricingMode\":\"HOUR\",\"startsAt\":\"2030-11-10T10:00:00Z\",\"endsAt\":\"2030-11-10T12:00:00Z\",\"isUrgent\":true}" >/tmp/chat-urgent.json
+          node -e 'const d=require("/tmp/chat-urgent.json"); if(!d.ok||!d.request.isUrgent)process.exit(1); require("fs").writeFileSync("/tmp/chat-urgent-id",d.request.id)'
+          urgent_id=$(cat /tmp/chat-urgent-id)
+          curl --fail --silent -b /tmp/chat-owner.txt http://127.0.0.1:3000/api/notifications >/tmp/chat-urgent-owner-notification.json
+          node -e 'const d=require("/tmp/chat-urgent-owner-notification.json"); if(!d.items.some(x=>x.type==="URGENT_RESERVED" && x.relatedEntityId===require("fs").readFileSync("/tmp/chat-urgent-id","utf8")))process.exit(1)'
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE rental_requests SET reservation_expires_at=now()-interval '1 minute' WHERE id='$urgent_id';"
+          curl --fail --silent -b /tmp/chat-borrower.txt http://127.0.0.1:3000/api/activity/summary >/dev/null
+          test "$(psql "$DATABASE_URL" -Atc "SELECT status FROM rental_requests WHERE id='$urgent_id'")" = "EXPIRED"
+          curl --fail --silent -b /tmp/chat-borrower.txt http://127.0.0.1:3000/api/notifications >/tmp/chat-expired-notification.json
+          node -e 'const d=require("/tmp/chat-expired-notification.json"); if(!d.items.some(x=>x.type==="URGENT_EXPIRED"))process.exit(1)'
+
+      - name: Render real chat and notifications UI
+        run: |
+          request_id=$(cat /tmp/chat-request-id)
+          curl --fail --silent -L -b /tmp/chat-borrower.txt "http://127.0.0.1:3000/chat?rentalRequestId=$request_id" >/tmp/chat-page.html
+          grep -q "แชตการยืม" /tmp/chat-page.html
+          grep -q "PostgreSQL" /tmp/chat-page.html
+          curl --fail --silent -L -b /tmp/chat-borrower.txt http://127.0.0.1:3000/notifications >/tmp/chat-notifications-page.html
+          grep -q "การแจ้งเตือน" /tmp/chat-notifications-page.html
+          ! grep -q "Prototype" /tmp/chat-page.html
+
+      - name: Show Next.js log on failure
+        if: failure()
+        run: cat /tmp/chat-next.log || true

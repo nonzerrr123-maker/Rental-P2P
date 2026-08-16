@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { authorizationErrorResponse, requireUser } from "@/lib/auth/authorization";
 import { BookingError } from "@/lib/rental/bookings";
+import { synchronizeRentalRequestCommunication } from "@/lib/rental/communication";
 import { applyRentalLifecycleAction } from "@/lib/rental/lifecycle";
 
 function bookingErrorResponse(error: unknown): NextResponse | null {
@@ -37,6 +38,11 @@ export async function POST(
     }
     const action = body && typeof body === "object" ? (body as Record<string, unknown>).action : undefined;
     const rentalRequest = await applyRentalLifecycleAction(user, id, action);
+    try {
+      await synchronizeRentalRequestCommunication(rentalRequest.id);
+    } catch (error) {
+      console.error("Lifecycle updated but communication sync failed", error);
+    }
     return NextResponse.json({ ok: true, request: rentalRequest });
   } catch (error) {
     const authResponse = authorizationErrorResponse(error);
