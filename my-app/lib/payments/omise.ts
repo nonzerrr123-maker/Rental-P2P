@@ -3,7 +3,6 @@ import type {
   PaymentProvider,
   ProviderCreatePaymentInput,
   ProviderCreatePaymentResult,
-  ProviderRefundInput,
   ProviderRefundResult,
 } from "@/lib/payments/provider";
 
@@ -181,7 +180,7 @@ export class OmisePaymentProvider implements PaymentProvider {
     };
   }
 
-  async refundPayment(_input: ProviderRefundInput): Promise<ProviderRefundResult> {
+  async refundPayment(): Promise<ProviderRefundResult> {
     throw new OmiseManualRefundRequiredError();
   }
 }
