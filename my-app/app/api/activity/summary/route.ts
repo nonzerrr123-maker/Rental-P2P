@@ -3,10 +3,12 @@ import { authorizationErrorResponse, requireUser } from "@/lib/auth/authorizatio
 import { getChatUnreadCount } from "@/lib/chat/service";
 import { getNotificationUnreadCount } from "@/lib/notifications/service";
 import { synchronizeCommunicationForUser } from "@/lib/rental/communication";
+import { expireStaleUrgentReservations } from "@/lib/rental/urgent";
 
 export async function GET() {
   try {
     const user = await requireUser();
+    await expireStaleUrgentReservations();
     await synchronizeCommunicationForUser(user.id);
     const [chatUnread, notificationUnread] = await Promise.all([
       getChatUnreadCount(user.id),
