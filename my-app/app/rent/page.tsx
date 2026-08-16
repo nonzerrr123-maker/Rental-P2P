@@ -86,6 +86,7 @@ export default async function RentPage({ searchParams }: { searchParams: SearchP
         <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5">
           <Link href="/" className="text-2xl font-black">Borow Borow<span className="text-[#c9a227]">.</span></Link>
           <div className="flex items-center gap-2">
+            <Link href="/location" className="rounded-full border border-[#d8c16d] px-4 py-2 text-sm font-bold text-[#806515]">📍 Nearby</Link>
             <Link href="/lend" className="rounded-full border px-4 py-2 text-sm font-bold hover:border-[#c9a227]">ลงของให้ยืม</Link>
             <Link href="/dashboard" className="rounded-full bg-neutral-950 px-4 py-2 text-sm font-bold text-white">Dashboard</Link>
           </div>
@@ -142,8 +143,8 @@ export default async function RentPage({ searchParams }: { searchParams: SearchP
                     ) : (
                       <div className="grid h-full place-items-center text-5xl text-neutral-300">📦</div>
                     )}
-                    {item.urgentEnabled && (
-                      <span className="absolute left-3 top-3 rounded-full bg-neutral-950 px-3 py-1.5 text-xs font-black text-white">⚡ ยืมด่วน</span>
+                    {item.urgentAvailableNow && (
+                      <span className="absolute left-3 top-3 rounded-full bg-neutral-950 px-3 py-1.5 text-xs font-black text-white">⚡ ยืมด่วน · ว่างตอนนี้</span>
                     )}
                     {item.distanceKm !== null && (
                       <span className="absolute bottom-3 right-3 rounded-full bg-white/95 px-3 py-1.5 text-xs font-black shadow-sm">{item.distanceKm.toFixed(1)} กม.</span>
