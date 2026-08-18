@@ -99,7 +99,7 @@ jobs:
           curl --fail --silent -b /tmp/super-cookie.txt -X PATCH "http://127.0.0.1:3000/api/admin/users/$target_id/moderation" -H 'Content-Type: application/json' --data '{"action":"BAN","reason":"CI abuse moderation"}' > /tmp/ban.json
           node -e 'const d=require("/tmp/ban.json"); if(!d.ok || d.user.isActive!==false || d.revokedSessions<1) process.exit(1)'
           psql "$DATABASE_URL" -Atc "SELECT is_active::text FROM users WHERE id='$target_id'" | grep '^false$'
-          psql "$DATABASE_URL" -Atc "SELECT action || ':' || details->>'reason' FROM admin_audit_logs WHERE target_id='$target_id' ORDER BY created_at DESC LIMIT 1" | grep '^USER_BANNED:CI abuse moderation$'
+          psql "$DATABASE_URL" -Atc "SELECT action || ':' || (details->>'reason') FROM admin_audit_logs WHERE target_id='$target_id' ORDER BY created_at DESC LIMIT 1" | grep '^USER_BANNED:CI abuse moderation$'
           target_code=$(curl --silent --output /tmp/target-after-ban.json --write-out "%{http_code}" -b /tmp/target-cookie.txt http://127.0.0.1:3000/api/auth/me)
           test "$target_code" = "401"
       - name: Protect superadmin and allow reversible unban
@@ -119,7 +119,7 @@ jobs:
           node -e 'const d=require("/tmp/public-before.json"); if(!d.ok || !d.items.some(x=>x.id==="16000000-0000-4000-8000-000000000001")) process.exit(1)'
           curl --fail --silent -b /tmp/super-cookie.txt -X PATCH http://127.0.0.1:3000/api/admin/listings/16000000-0000-4000-8000-000000000001/moderation -H 'Content-Type: application/json' --data '{"action":"HIDE","reason":"CI prohibited listing"}' > /tmp/hide.json
           psql "$DATABASE_URL" -Atc "SELECT status::text FROM rental_items WHERE id='16000000-0000-4000-8000-000000000001'" | grep '^PAUSED$'
-          psql "$DATABASE_URL" -Atc "SELECT action || ':' || details->>'previousStatus' FROM admin_audit_logs WHERE target_id='16000000-0000-4000-8000-000000000001' ORDER BY created_at DESC LIMIT 1" | grep '^LISTING_HIDDEN:ACTIVE$'
+          psql "$DATABASE_URL" -Atc "SELECT action || ':' || (details->>'previousStatus') FROM admin_audit_logs WHERE target_id='16000000-0000-4000-8000-000000000001' ORDER BY created_at DESC LIMIT 1" | grep '^LISTING_HIDDEN:ACTIVE$'
           curl --fail --silent 'http://127.0.0.1:3000/api/rental-items?q=Moderation%20Camera' > /tmp/public-hidden.json
           node -e 'const d=require("/tmp/public-hidden.json"); if(!d.ok || d.items.some(x=>x.id==="16000000-0000-4000-8000-000000000001")) process.exit(1)'
           curl --fail --silent -b /tmp/super-cookie.txt -X PATCH http://127.0.0.1:3000/api/admin/listings/16000000-0000-4000-8000-000000000001/moderation -H 'Content-Type: application/json' --data '{"action":"RESTORE","reason":"CI appeal accepted"}' > /tmp/restore.json
