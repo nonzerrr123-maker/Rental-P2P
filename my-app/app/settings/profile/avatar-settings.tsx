@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 
 export default function AvatarSettings({ userId, displayName }: { userId: string; displayName: string }) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [version, setVersion] = useState(Date.now());
+  const [version, setVersion] = useState(0);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [imageVisible, setImageVisible] = useState(true);
@@ -19,7 +19,7 @@ export default function AvatarSettings({ userId, displayName }: { userId: string
       const response = await fetch("/api/settings/profile/avatar", { method: "POST", body: form });
       const result = await response.json();
       if (!response.ok || !result.ok) throw new Error(result.message ?? "อัปโหลดรูปไม่สำเร็จ");
-      setImageVisible(true); setVersion(Date.now()); setMessage("อัปเดตรูปโปรไฟล์แล้ว");
+      setImageVisible(true); setVersion((current) => current + 1); setMessage("อัปเดตรูปโปรไฟล์แล้ว");
     } catch (error) { setMessage(error instanceof Error ? error.message : "อัปโหลดรูปไม่สำเร็จ"); }
     finally { setBusy(false); if (inputRef.current) inputRef.current.value = ""; }
   };
