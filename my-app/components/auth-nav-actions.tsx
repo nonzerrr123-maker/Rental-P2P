@@ -2,25 +2,23 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import ActivityNavLinks from "@/components/activity-nav-links";
+import UserAvatar from "@/components/user-avatar";
 import { LayoutDashboardIcon, LogOutIcon, PlusIcon, ShieldCheckIcon, UserIcon } from "@/components/ui/icons";
 
 type NavUser = {
+  id: string;
   displayName: string;
   role: "USER" | "ADMIN" | "SUPERADMIN";
   verificationStatus: "UNVERIFIED" | "PENDING" | "VERIFIED" | "REJECTED";
 };
 
-function initials(name: string): string {
-  return name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("") || "U";
-}
-
 export default function AuthNavActions() {
   const router = useRouter();
   const [user, setUser] = useState<NavUser | null>(null);
   const [resolved, setResolved] = useState(false);
-  const avatar = useMemo(() => user ? initials(user.displayName) : "", [user]);
+  const [avatarVersion, setAvatarVersion] = useState(0);
 
   useEffect(() => {
     let active = true;
@@ -29,7 +27,14 @@ export default function AuthNavActions() {
       .then((result) => { if (active) setUser(result?.user ?? null); })
       .catch(() => undefined)
       .finally(() => { if (active) setResolved(true); });
-    return () => { active = false; };
+
+    const refreshAvatar = () => setAvatarVersion((current) => current + 1);
+    window.addEventListener("borow:avatar-updated", refreshAvatar);
+
+    return () => {
+      active = false;
+      window.removeEventListener("borow:avatar-updated", refreshAvatar);
+    };
   }, []);
 
   const logout = async () => {
@@ -67,7 +72,7 @@ export default function AuthNavActions() {
         {canRent ? <PlusIcon size={17}/> : <ShieldCheckIcon size={17}/>} {canRent ? "ลงของ" : "ยืนยันตัวตน"}
       </Link>
       <Link href="/dashboard" className="group inline-flex h-10 items-center gap-2 rounded-xl border border-[var(--line)] bg-white pl-1.5 pr-2.5 text-sm font-bold hover:border-[var(--gold-line)]">
-        <span className="grid h-7 w-7 place-items-center rounded-lg bg-[var(--ink)] text-[10px] font-black tracking-tight text-[var(--gold)]">{avatar}</span>
+        <UserAvatar userId={user.id} displayName={user.displayName} version={avatarVersion} className="h-7 w-7 rounded-lg text-[10px]" />
         <span className="hidden max-w-28 truncate sm:inline">{user.displayName}</span>
         <LayoutDashboardIcon size={15} className="hidden text-[var(--muted)] xl:block"/>
       </Link>
