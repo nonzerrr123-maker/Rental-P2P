@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { QueryResultRow } from "pg";
 import SiteHeader from "@/components/site-header";
+import UserAvatar from "@/components/user-avatar";
 import { CalendarIcon, LayoutDashboardIcon, PackageIcon, ShieldCheckIcon, StarIcon, UsersIcon } from "@/components/ui/icons";
 import { SectionEyebrow, StatusPill } from "@/components/ui/primitives";
 import { requireUserPage } from "@/lib/auth/authorization";
@@ -14,6 +15,7 @@ type ProfileRow = QueryResultRow & {
   rating_average: string;
   rating_count: number;
   created_at: Date;
+  avatar_updated_at: Date | null;
   active_listings: string;
   borrowed_count: string;
   lent_count: string;
@@ -25,7 +27,7 @@ const date = new Intl.DateTimeFormat("th-TH", { dateStyle: "long" });
 export default async function ProfilePage() {
   const user = await requireUserPage("/profile");
   const result = await query<ProfileRow>(
-    `SELECT u.email,u.display_name,u.role::text,u.verification_status::text,u.rating_average,u.rating_count,u.created_at,
+    `SELECT u.email,u.display_name,u.role::text,u.verification_status::text,u.rating_average,u.rating_count,u.created_at,u.avatar_updated_at,
       (SELECT count(*)::text FROM rental_items ri WHERE ri.owner_id=u.id AND ri.status='ACTIVE') AS active_listings,
       (SELECT count(*)::text FROM rental_requests rr WHERE rr.borrower_id=u.id) AS borrowed_count,
       (SELECT count(*)::text FROM rental_requests rr WHERE rr.lender_id=u.id) AS lent_count,
@@ -41,7 +43,12 @@ export default async function ProfilePage() {
       <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6 sm:py-12 lg:px-8">
         <SectionEyebrow>Account</SectionEyebrow>
         <div className="mt-3 flex flex-col gap-5 rounded-[28px] border border-[var(--line)] bg-white p-5 shadow-[var(--shadow-soft)] sm:flex-row sm:items-center sm:p-7">
-          <div className="grid h-16 w-16 shrink-0 place-items-center rounded-2xl bg-[var(--ink)] text-xl font-black text-[var(--gold)]">{profile.display_name.trim().slice(0, 2).toUpperCase()}</div>
+          <UserAvatar
+            userId={user.id}
+            displayName={profile.display_name}
+            version={profile.avatar_updated_at?.getTime() ?? 0}
+            className="h-16 w-16 rounded-2xl text-xl"
+          />
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2"><h1 className="text-2xl font-black tracking-[-0.035em] sm:text-3xl">{profile.display_name}</h1>{profile.verification_status === "VERIFIED" && <StatusPill tone="gold">ยืนยันตัวตนแล้ว</StatusPill>}</div>
             <p className="mt-1 truncate text-sm text-[var(--muted)]">{profile.email}</p>
