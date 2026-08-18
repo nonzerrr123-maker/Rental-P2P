@@ -7,6 +7,9 @@ on:
       - "my-app/app/api/settings/profile/avatar/route.ts"
       - "my-app/app/api/users/[userId]/avatar/route.ts"
       - "my-app/app/settings/profile/**"
+      - "my-app/app/profile/**"
+      - "my-app/components/user-avatar.tsx"
+      - "my-app/components/auth-nav-actions.tsx"
       - "my-app/docs/migrations/20260818_task18_user_avatar.sql"
       - ".github/workflows/user-media-integration-check.yml"
 
@@ -58,7 +61,7 @@ jobs:
           docker run --rm --network host --entrypoint /bin/sh minio/mc -c 'mc alias set local http://127.0.0.1:9000 minioadmin minioadmin && mc mb --ignore-existing local/rental-images'
       - name: Scoped lint and build
         run: |
-          npx eslint lib/profile/avatar.ts app/api/settings/profile/avatar/route.ts app/api/users/[userId]/avatar/route.ts app/settings/profile/avatar-settings.tsx app/settings/profile/page.tsx
+          npx eslint lib/profile/avatar.ts app/api/settings/profile/avatar/route.ts app/api/users/[userId]/avatar/route.ts app/settings/profile/avatar-settings.tsx app/settings/profile/page.tsx app/profile/page.tsx components/user-avatar.tsx components/auth-nav-actions.tsx
           npm run build
       - name: Start application
         run: |
@@ -77,7 +80,7 @@ jobs:
           test "$code" = "401"
           code=$(curl --silent --output /tmp/fake.json --write-out '%{http_code}' -b /tmp/avatar.cookies -X POST http://127.0.0.1:3000/api/settings/profile/avatar -F file=@/tmp/fake.png\;type=image/png)
           test "$code" = "415"
-      - name: Upload proxy and replace avatar safely
+      - name: Upload proxy and avatar surfaces use stored media
         run: |
           curl --fail --silent -b /tmp/avatar.cookies -X POST http://127.0.0.1:3000/api/settings/profile/avatar -F file=@/tmp/avatar.png\;type=image/png >/tmp/upload.json
           user_id=$(psql "$DATABASE_URL" -Atc "SELECT id FROM users WHERE email='avatar.ci@example.com'")
@@ -86,19 +89,25 @@ jobs:
           case "$key" in user-avatars/$user_id/*) ;; *) exit 1 ;; esac
           curl --fail --silent -D /tmp/avatar.headers "http://127.0.0.1:3000/api/users/$user_id/avatar" >/tmp/avatar-body
           grep -qi '^content-type: image/png' /tmp/avatar.headers
+          grep -qi '^cache-control: public, max-age=0, must-revalidate' /tmp/avatar.headers
           test "$(wc -c </tmp/avatar-body)" -gt 8
           ! grep -q "$key" /tmp/upload.json
-      - name: Delete avatar clears database and object
+          curl --fail --silent -b /tmp/avatar.cookies http://127.0.0.1:3000/profile >/tmp/profile.html
+          grep -q "/api/users/$user_id/avatar" /tmp/profile.html
+          grep -q 'borow:avatar-updated' app/settings/profile/avatar-settings.tsx
+          grep -q 'UserAvatar' components/auth-nav-actions.tsx
+      - name: Delete avatar clears database and avoids stale missing-image cache
         run: |
           user_id=$(psql "$DATABASE_URL" -Atc "SELECT id FROM users WHERE email='avatar.ci@example.com'")
           curl --fail --silent -b /tmp/avatar.cookies -X DELETE http://127.0.0.1:3000/api/settings/profile/avatar >/tmp/delete.json
           test "$(psql "$DATABASE_URL" -Atc "SELECT avatar_storage_key IS NULL FROM users WHERE id='$user_id'")" = "t"
-          code=$(curl --silent --output /tmp/missing --write-out '%{http_code}' "http://127.0.0.1:3000/api/users/$user_id/avatar")
+          code=$(curl --silent -D /tmp/missing.headers --output /tmp/missing --write-out '%{http_code}' "http://127.0.0.1:3000/api/users/$user_id/avatar")
           test "$code" = "404"
+          grep -qi '^cache-control: no-store' /tmp/missing.headers
       - name: Render profile settings
         run: |
-          curl --fail --silent -b /tmp/avatar.cookies http://127.0.0.1:3000/settings/profile >/tmp/profile.html
-          grep -q 'รูปโปรไฟล์' /tmp/profile.html
+          curl --fail --silent -b /tmp/avatar.cookies http://127.0.0.1:3000/settings/profile >/tmp/profile-settings.html
+          grep -q 'รูปโปรไฟล์' /tmp/profile-settings.html
       - name: Show app log on failure
         if: failure()
         run: cat /tmp/user-media-next.log || true
