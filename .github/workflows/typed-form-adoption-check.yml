@@ -1,0 +1,60 @@
+name: Typed form adoption check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/lib/forms/rental-actions.ts"
+      - "my-app/components/ui/textarea.tsx"
+      - "my-app/components/ui/select.tsx"
+      - "my-app/app/rent/[id]/booking-form.tsx"
+      - "my-app/app/rent/[id]/urgent-booking-form.tsx"
+      - "my-app/app/community/new/community-request-form.tsx"
+      - "my-app/app/review/review-client.tsx"
+      - "my-app/app/dispute/dispute-client.tsx"
+      - ".github/workflows/typed-form-adoption-check.yml"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+      - name: Install dependencies
+        working-directory: my-app
+        run: npm ci
+      - name: Scoped lint
+        working-directory: my-app
+        run: >-
+          npx eslint
+          lib/forms/rental-actions.ts
+          components/ui/textarea.tsx
+          components/ui/select.tsx
+          app/rent/[id]/booking-form.tsx
+          app/rent/[id]/urgent-booking-form.tsx
+          app/community/new/community-request-form.tsx
+          app/review/review-client.tsx
+          app/dispute/dispute-client.tsx
+      - name: Production build
+        working-directory: my-app
+        run: npm run build
+      - name: Verify core mutation forms use RHF and Zod
+        working-directory: my-app
+        run: |
+          for file in \
+            'app/rent/[id]/booking-form.tsx' \
+            'app/rent/[id]/urgent-booking-form.tsx' \
+            'app/community/new/community-request-form.tsx' \
+            'app/review/review-client.tsx' \
+            'app/dispute/dispute-client.tsx'; do
+            grep -q 'react-hook-form' "$file"
+            grep -q 'zodResolver' "$file"
+          done
+          grep -q 'bookingFormSchema' lib/forms/rental-actions.ts
+          grep -q 'communityRequestFormSchema' lib/forms/rental-actions.ts
+          grep -q 'reviewFormSchema' lib/forms/rental-actions.ts
+          grep -q 'disputeOpenFormSchema' lib/forms/rental-actions.ts
