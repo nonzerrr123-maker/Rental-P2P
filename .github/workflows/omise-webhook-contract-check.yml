@@ -1,0 +1,40 @@
+name: Omise webhook contract check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/lib/payments/omise.ts"
+      - "my-app/lib/payments/omise-events.ts"
+      - "my-app/app/api/payments/webhooks/omise/route.ts"
+      - "my-app/.env.example"
+      - ".github/workflows/omise-webhook-contract-check.yml"
+
+jobs:
+  validate-omise-webhook-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: my-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+      - run: npm ci
+      - name: Lint provider webhook scope
+        run: npx eslint lib/payments/omise.ts lib/payments/omise-events.ts app/api/payments/webhooks/omise/route.ts
+      - name: Verify standard Omise webhook contract
+        run: |
+          grep -q 'reason: "OMISE_SECRET_KEY is required"' lib/payments/omise.ts
+          ! grep -q 'OMISE_SECRET_KEY and OMISE_WEBHOOK_SECRET are required' lib/payments/omise.ts
+          grep -q 'configState.config.webhookSecret &&' app/api/payments/webhooks/omise/route.ts
+          grep -q 'retrieveOmiseCharge(event.chargeId)' lib/payments/omise-events.ts
+          grep -q 'Charge amount or currency did not match the server checkout snapshot' lib/payments/omise-events.ts
+          grep -q 'Do not invent a value' .env.example
+      - name: Build application
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/p2p_rental
+        run: npm run build
