@@ -23,13 +23,14 @@ export async function PATCH(request: Request) {
       );
     }
 
+    const phone = parsed.data.phone === "" ? null : parsed.data.phone;
     const result = await query<ProfileRow>(
       `UPDATE users
        SET display_name = $2,
            phone = $3
        WHERE id = $1
        RETURNING display_name, phone`,
-      [user.id, parsed.data.displayName, parsed.data.phone],
+      [user.id, parsed.data.displayName, phone],
     );
 
     return NextResponse.json({
