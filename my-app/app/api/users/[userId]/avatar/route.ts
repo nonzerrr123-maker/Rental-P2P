@@ -12,12 +12,12 @@ export async function GET(_request: Request, { params }: { params: Promise<{ use
     const parsed = uuid.safeParse(raw);
     if (!parsed.success) return NextResponse.json({ ok: false, code: "INVALID_USER_ID" }, { status: 400 });
     const avatar = await readAvatar(parsed.data);
-    if (!avatar) return new NextResponse(null, { status: 404, headers: { "Cache-Control": "public, max-age=60" } });
+    if (!avatar) return new NextResponse(null, { status: 404, headers: { "Cache-Control": "no-store" } });
     return new NextResponse(avatar.response.body, {
       status: 200,
       headers: {
         "Content-Type": avatar.contentType,
-        "Cache-Control": "public, max-age=300, stale-while-revalidate=86400",
+        "Cache-Control": "public, max-age=0, must-revalidate",
         "X-Content-Type-Options": "nosniff",
       },
     });
