@@ -4,8 +4,7 @@ const optionalPhone = z
   .string()
   .trim()
   .max(24, "เบอร์โทรยาวเกินไป")
-  .refine((value) => value === "" || /^[0-9+()\-\s]{8,24}$/.test(value), "กรอกเบอร์โทรให้ถูกต้อง")
-  .transform((value) => (value === "" ? null : value));
+  .refine((value) => value === "" || /^[0-9+()\-\s]{8,24}$/.test(value), "กรอกเบอร์โทรให้ถูกต้อง");
 
 export const profileSettingsSchema = z.object({
   displayName: z.string().trim().min(2, "ชื่ออย่างน้อย 2 ตัวอักษร").max(80, "ชื่อยาวเกิน 80 ตัวอักษร"),
