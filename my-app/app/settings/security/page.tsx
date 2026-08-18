@@ -25,7 +25,7 @@ export default async function SecuritySettingsPage() {
       <SiteHeader />
       <div className="mx-auto w-full max-w-2xl px-4 py-8 sm:px-6 sm:py-12">
         <Link href="/settings" className="text-xs font-black text-[var(--gold-strong)]">← การตั้งค่า</Link>
-        <SectionEyebrow className="mt-6">Security</SectionEyebrow>
+        <div className="mt-6"><SectionEyebrow>Security</SectionEyebrow></div>
         <h1 className="mt-3 text-3xl font-black tracking-[-0.045em]">ความปลอดภัยของบัญชี</h1>
         <p className="mt-2 text-sm leading-6 text-[var(--muted)]">ควบคุมรหัสผ่านและ session ที่ยังเข้าใช้งานบัญชีได้</p>
         <Card className="mt-6">
