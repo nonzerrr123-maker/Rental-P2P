@@ -1,0 +1,48 @@
+name: UI form foundation check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/package.json"
+      - "my-app/package-lock.json"
+      - "my-app/components.json"
+      - "my-app/lib/utils.ts"
+      - "my-app/lib/forms/**"
+      - "my-app/components/ui/**"
+      - "my-app/app/login/**"
+      - "my-app/app/register/**"
+      - ".github/workflows/ui-form-foundation-check.yml"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: my-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+      - run: npm ci
+      - name: Verify shadcn and form dependencies
+        run: |
+          node -e "const p=require('./package.json'); for (const d of ['react-hook-form','zod','@hookform/resolvers','class-variance-authority','clsx','tailwind-merge']) { if (!p.dependencies[d]) throw new Error('missing '+d) }"
+          test -f components.json
+          test -f components/ui/button.tsx
+          test -f components/ui/input.tsx
+          test -f lib/forms/auth.ts
+      - name: Scoped lint
+        run: npx eslint app/login/page.tsx app/register/page.tsx components/ui/button.tsx components/ui/input.tsx components/ui/card.tsx components/ui/label.tsx components/ui/form-field.tsx lib/forms/auth.ts lib/utils.ts
+      - name: Production build
+        run: npm run build
+      - name: Verify RHF and Zod migration markers
+        run: |
+          grep -q 'useForm' app/login/page.tsx
+          grep -q 'zodResolver' app/login/page.tsx
+          grep -q 'useForm' app/register/page.tsx
+          grep -q 'zodResolver' app/register/page.tsx
+          grep -q 'loginSchema' lib/forms/auth.ts
+          grep -q 'registerSchema' lib/forms/auth.ts
