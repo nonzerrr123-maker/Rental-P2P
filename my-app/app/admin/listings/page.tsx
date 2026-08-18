@@ -79,7 +79,7 @@ export default async function ListingsPage({ searchParams }: { searchParams: Sea
         <div className="mt-2 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <h1 className="text-3xl font-black tracking-[-0.045em] sm:text-4xl">จัดการประกาศ</h1>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--muted)]">ดึงข้อมูลจาก rental_items จริง ซ่อนประกาศด้วยสถานะ PAUSED แบบ reversible และเก็บเหตุผลทุกครั้งใน audit log</p>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--muted)]">ดึงข้อมูลจาก rental_items จริง ซ่อนประกาศแบบ reversible โดยเก็บสถานะเดิมและเหตุผลทุกครั้งใน audit log</p>
           </div>
           <span className="w-fit rounded-full border border-[var(--line)] bg-white px-3 py-2 text-xs font-black">ผลลัพธ์ {result.rows.length}</span>
         </div>
@@ -113,7 +113,7 @@ export default async function ListingsPage({ searchParams }: { searchParams: Sea
                   <div className="mt-3 flex flex-wrap gap-3 text-[10px] text-[var(--muted)]"><span className="font-mono">{item.id}</span><Link href={`/rent/${item.id}`} className="font-black text-[var(--gold-strong)]">ดูหน้าสินค้า →</Link></div>
                 </div>
                 <div className="border-t border-[var(--line)] pt-4 lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0">
-                  <ListingModerationControl itemId={item.id} status={item.status} />
+                  <ListingModerationControl itemId={item.id} status={item.status} adminHidden={item.status === "PAUSED" && item.latest_action === "LISTING_HIDDEN"} />
                 </div>
               </div>
             </article>
