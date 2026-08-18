@@ -9,7 +9,7 @@ import type {
 export type OmiseConfiguration = {
   apiBaseUrl: string;
   secretKey: string;
-  webhookSecret: string;
+  webhookSecret: string | null;
   requestTimeoutMs: number;
   webhookToleranceSeconds: number;
   livePayoutsEnabled: boolean;
@@ -57,12 +57,11 @@ function positiveInteger(value: string | undefined, fallback: number): number {
 
 export function getOmiseConfigurationState(): OmiseConfigurationState {
   const secretKey = process.env.OMISE_SECRET_KEY?.trim() ?? "";
-  const webhookSecret = process.env.OMISE_WEBHOOK_SECRET?.trim() ?? "";
-  if (!secretKey || !webhookSecret) {
+  if (!secretKey) {
     return {
       configured: false,
       config: null,
-      reason: "OMISE_SECRET_KEY and OMISE_WEBHOOK_SECRET are required",
+      reason: "OMISE_SECRET_KEY is required",
     };
   }
   return {
@@ -71,7 +70,7 @@ export function getOmiseConfigurationState(): OmiseConfigurationState {
     config: {
       apiBaseUrl: (process.env.OMISE_API_BASE_URL?.trim() || "https://api.omise.co").replace(/\/$/, ""),
       secretKey,
-      webhookSecret,
+      webhookSecret: process.env.OMISE_WEBHOOK_SECRET?.trim() || null,
       requestTimeoutMs: positiveInteger(process.env.OMISE_REQUEST_TIMEOUT_MS, 8_000),
       webhookToleranceSeconds: positiveInteger(process.env.OMISE_WEBHOOK_TOLERANCE_SECONDS, 300),
       livePayoutsEnabled: process.env.OMISE_ENABLE_LIVE_PAYOUTS?.trim().toLowerCase() === "true",
@@ -166,7 +165,7 @@ export class OmisePaymentProvider implements PaymentProvider {
     if (!charge.qrImageUrl) throw new OmiseProviderError("Omise PromptPay charge did not return a QR image");
 
     // Never trust create-charge as final payment authority. The local payment stays
-    // actionable until a signed webhook is received and the charge is retrieved again.
+    // actionable until a webhook is received and the charge is retrieved again.
     return {
       provider: this.name,
       providerReference: charge.id,
@@ -187,15 +186,16 @@ export class OmisePaymentProvider implements PaymentProvider {
 
 export function verifyOmiseWebhookSignature(rawBody: string, signatureHeader: string | null, timestampHeader: string | null): boolean {
   const state = getOmiseConfigurationState();
-  if (!state.config || !signatureHeader || !timestampHeader) return false;
+  const webhookSecret = state.config?.webhookSecret;
+  if (!webhookSecret || !signatureHeader || !timestampHeader) return false;
   const timestamp = Number(timestampHeader);
   if (!Number.isFinite(timestamp)) return false;
   const nowSeconds = Math.floor(Date.now() / 1000);
-  if (Math.abs(nowSeconds - timestamp) > state.config.webhookToleranceSeconds) return false;
+  if (Math.abs(nowSeconds - timestamp) > (state.config?.webhookToleranceSeconds ?? 300)) return false;
 
   let secret: Buffer;
   try {
-    secret = Buffer.from(state.config.webhookSecret, "base64");
+    secret = Buffer.from(webhookSecret, "base64");
   } catch {
     return false;
   }
