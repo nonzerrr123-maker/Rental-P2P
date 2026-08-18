@@ -55,10 +55,11 @@ export default async function ProfilePage() {
         </div>
 
         <section className="mt-6 grid gap-3 sm:grid-cols-2">
+          <Link href="/settings" className="rounded-[22px] border border-[var(--gold-line)] bg-[var(--gold-soft)] p-5 hover:bg-white"><p className="font-black">ตั้งค่าบัญชี</p><p className="mt-1 text-sm text-[var(--muted-strong)]">แก้โปรไฟล์ เปลี่ยนรหัสผ่าน และจัดการ session</p></Link>
           <Link href="/dashboard" className="rounded-[22px] border border-[var(--line)] bg-white p-5 hover:border-[var(--gold-line)]"><p className="font-black">Rental Dashboard</p><p className="mt-1 text-sm text-[var(--muted)]">คำขอยืม การชำระ นัดรับ คืนของ และสถานะทั้งหมด</p></Link>
           <Link href="/lend" className="rounded-[22px] border border-[var(--line)] bg-white p-5 hover:border-[var(--gold-line)]"><p className="font-black">ของที่ฉันปล่อยยืม</p><p className="mt-1 text-sm text-[var(--muted)]">เพิ่มรายการ จัดการรูป ราคา พื้นที่ และยืมด่วน</p></Link>
           <Link href="/community" className="rounded-[22px] border border-[var(--line)] bg-white p-5 hover:border-[var(--gold-line)]"><p className="font-black">Community</p><p className="mt-1 text-sm text-[var(--muted)]">ดูคำขอหาของและข้อเสนอจากคนใกล้ตัว</p></Link>
-          <Link href={profile.verification_status === "VERIFIED" ? "/verification" : "/verification"} className="rounded-[22px] border border-[var(--line)] bg-white p-5 hover:border-[var(--gold-line)]"><p className="font-black">Trust & identity</p><p className="mt-1 text-sm text-[var(--muted)]">สถานะ KYC: {profile.verification_status}</p></Link>
+          <Link href="/verification" className="rounded-[22px] border border-[var(--line)] bg-white p-5 hover:border-[var(--gold-line)] sm:col-span-2"><p className="font-black">Trust & identity</p><p className="mt-1 text-sm text-[var(--muted)]">สถานะ KYC: {profile.verification_status}</p></Link>
         </section>
       </div>
     </main>
