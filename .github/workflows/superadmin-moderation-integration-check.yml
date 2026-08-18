@@ -1,0 +1,145 @@
+name: Superadmin moderation integration check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/lib/auth/authorization.ts"
+      - "my-app/lib/forms/moderation.ts"
+      - "my-app/app/admin/**"
+      - "my-app/app/api/admin/users/**"
+      - "my-app/app/api/admin/listings/**"
+      - ".github/workflows/superadmin-moderation-integration-check.yml"
+
+jobs:
+  validate-moderation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: p2p_rental
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d p2p_rental"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/p2p_rental
+      DATABASE_POOL_MAX: 5
+      ADMIN_EMAIL: superadmin.moderation-ci@example.com
+      ADMIN_PASSWORD: moderation-ci-superadmin-password
+      NEXT_TELEMETRY_DISABLED: 1
+    defaults:
+      run:
+        working-directory: my-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+      - run: npm ci
+      - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+      - name: Scoped lint
+        run: >-
+          npx eslint
+          lib/auth/authorization.ts
+          lib/forms/moderation.ts
+          app/api/admin/users/[userId]/moderation/route.ts
+          app/api/admin/listings/[itemId]/moderation/route.ts
+          app/admin/layout.tsx
+          app/admin/users/page.tsx
+          app/admin/users/user-moderation-control.tsx
+          app/admin/listings/page.tsx
+          app/admin/listings/listing-moderation-control.tsx
+      - run: npm run build
+      - name: Start application
+        run: |
+          nohup npm run start -- -p 3000 > /tmp/moderation-next.log 2>&1 &
+          for attempt in {1..30}; do
+            curl --fail --silent http://127.0.0.1:3000/api/health/db >/dev/null && exit 0
+            sleep 1
+          done
+          cat /tmp/moderation-next.log
+          exit 1
+      - name: Create moderation fixtures and sessions
+        run: |
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register -H 'Content-Type: application/json' --data '{"displayName":"Moderation Target","email":"moderation.target@example.com","password":"target-password-123"}' > /tmp/target-register.json
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register -H 'Content-Type: application/json' --data '{"displayName":"Listing Owner","email":"listing.owner@example.com","password":"owner-password-123"}' > /tmp/owner-register.json
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register -H 'Content-Type: application/json' --data '{"displayName":"Normal Admin","email":"normal.admin@example.com","password":"admin-password-123"}' > /tmp/admin-register.json
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          UPDATE users SET verification_status='VERIFIED' WHERE email IN ('moderation.target@example.com','listing.owner@example.com');
+          UPDATE users SET role='ADMIN', verification_status='VERIFIED' WHERE email='normal.admin@example.com';
+          INSERT INTO rental_items (id,owner_id,title,category,description,condition,status,daily_rate,deposit_amount,province,district)
+          SELECT '16000000-0000-4000-8000-000000000001',id,'Moderation Camera','Camera','CI listing for superadmin moderation','GOOD','ACTIVE',500,100,'ชลบุรี','เมืองชลบุรี'
+          FROM users WHERE email='listing.owner@example.com';
+          SQL
+          curl --fail --silent -c /tmp/target-cookie.txt -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"moderation.target@example.com","password":"target-password-123"}' > /tmp/target-login.json
+          curl --fail --silent -c /tmp/admin-cookie.txt -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"normal.admin@example.com","password":"admin-password-123"}' > /tmp/admin-login.json
+          curl --fail --silent -c /tmp/super-cookie.txt -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"superadmin.moderation-ci@example.com","password":"moderation-ci-superadmin-password"}' > /tmp/super-login.json
+          node -e 'const d=require("/tmp/super-login.json"); if(!d.ok || d.user.role!=="SUPERADMIN") process.exit(1)'
+      - name: Enforce superadmin-only moderation
+        run: |
+          target_id=$(psql "$DATABASE_URL" -Atc "SELECT id FROM users WHERE email='moderation.target@example.com'")
+          guest_code=$(curl --silent --output /tmp/guest-mod.json --write-out "%{http_code}" -X PATCH "http://127.0.0.1:3000/api/admin/users/$target_id/moderation" -H 'Content-Type: application/json' --data '{"action":"BAN","reason":"guest cannot ban"}')
+          test "$guest_code" = "401"
+          admin_code=$(curl --silent --output /tmp/admin-mod.json --write-out "%{http_code}" -b /tmp/admin-cookie.txt -X PATCH "http://127.0.0.1:3000/api/admin/users/$target_id/moderation" -H 'Content-Type: application/json' --data '{"action":"BAN","reason":"admin cannot ban"}')
+          test "$admin_code" = "403"
+          listing_code=$(curl --silent --output /tmp/admin-listing-mod.json --write-out "%{http_code}" -b /tmp/admin-cookie.txt -X PATCH http://127.0.0.1:3000/api/admin/listings/16000000-0000-4000-8000-000000000001/moderation -H 'Content-Type: application/json' --data '{"action":"HIDE","reason":"admin cannot hide"}')
+          test "$listing_code" = "403"
+      - name: Ban user, revoke sessions and audit
+        run: |
+          target_id=$(psql "$DATABASE_URL" -Atc "SELECT id FROM users WHERE email='moderation.target@example.com'")
+          curl --fail --silent -b /tmp/super-cookie.txt -X PATCH "http://127.0.0.1:3000/api/admin/users/$target_id/moderation" -H 'Content-Type: application/json' --data '{"action":"BAN","reason":"CI abuse moderation"}' > /tmp/ban.json
+          node -e 'const d=require("/tmp/ban.json"); if(!d.ok || d.user.isActive!==false || d.revokedSessions<1) process.exit(1)'
+          psql "$DATABASE_URL" -Atc "SELECT is_active::text FROM users WHERE id='$target_id'" | grep '^false$'
+          psql "$DATABASE_URL" -Atc "SELECT action || ':' || (details->>'reason') FROM admin_audit_logs WHERE target_id='$target_id' ORDER BY created_at DESC LIMIT 1" | grep '^USER_BANNED:CI abuse moderation$'
+          target_code=$(curl --silent --output /tmp/target-after-ban.json --write-out "%{http_code}" -b /tmp/target-cookie.txt http://127.0.0.1:3000/api/auth/me)
+          test "$target_code" = "401"
+      - name: Protect superadmin and allow reversible unban
+        run: |
+          target_id=$(psql "$DATABASE_URL" -Atc "SELECT id FROM users WHERE email='moderation.target@example.com'")
+          super_id=$(psql "$DATABASE_URL" -Atc "SELECT id FROM users WHERE email='superadmin.moderation-ci@example.com'")
+          self_code=$(curl --silent --output /tmp/self-ban.json --write-out "%{http_code}" -b /tmp/super-cookie.txt -X PATCH "http://127.0.0.1:3000/api/admin/users/$super_id/moderation" -H 'Content-Type: application/json' --data '{"action":"BAN","reason":"must be blocked"}')
+          test "$self_code" = "409"
+          curl --fail --silent -b /tmp/super-cookie.txt -X PATCH "http://127.0.0.1:3000/api/admin/users/$target_id/moderation" -H 'Content-Type: application/json' --data '{"action":"UNBAN","reason":"CI review complete"}' > /tmp/unban.json
+          psql "$DATABASE_URL" -Atc "SELECT is_active::text FROM users WHERE id='$target_id'" | grep '^true$'
+          psql "$DATABASE_URL" -Atc "SELECT action FROM admin_audit_logs WHERE target_id='$target_id' ORDER BY created_at DESC LIMIT 1" | grep '^USER_UNBANNED$'
+          target_code=$(curl --silent --output /tmp/target-old-session.json --write-out "%{http_code}" -b /tmp/target-cookie.txt http://127.0.0.1:3000/api/auth/me)
+          test "$target_code" = "401"
+      - name: Hide listing from marketplace and restore original state
+        run: |
+          curl --fail --silent 'http://127.0.0.1:3000/api/rental-items?q=Moderation%20Camera' > /tmp/public-before.json
+          node -e 'const d=require("/tmp/public-before.json"); if(!d.ok || !d.items.some(x=>x.id==="16000000-0000-4000-8000-000000000001")) process.exit(1)'
+          curl --fail --silent -b /tmp/super-cookie.txt -X PATCH http://127.0.0.1:3000/api/admin/listings/16000000-0000-4000-8000-000000000001/moderation -H 'Content-Type: application/json' --data '{"action":"HIDE","reason":"CI prohibited listing"}' > /tmp/hide.json
+          psql "$DATABASE_URL" -Atc "SELECT status::text FROM rental_items WHERE id='16000000-0000-4000-8000-000000000001'" | grep '^PAUSED$'
+          psql "$DATABASE_URL" -Atc "SELECT action || ':' || (details->>'previousStatus') FROM admin_audit_logs WHERE target_id='16000000-0000-4000-8000-000000000001' ORDER BY created_at DESC LIMIT 1" | grep '^LISTING_HIDDEN:ACTIVE$'
+          curl --fail --silent 'http://127.0.0.1:3000/api/rental-items?q=Moderation%20Camera' > /tmp/public-hidden.json
+          node -e 'const d=require("/tmp/public-hidden.json"); if(!d.ok || d.items.some(x=>x.id==="16000000-0000-4000-8000-000000000001")) process.exit(1)'
+          curl --fail --silent -b /tmp/super-cookie.txt -X PATCH http://127.0.0.1:3000/api/admin/listings/16000000-0000-4000-8000-000000000001/moderation -H 'Content-Type: application/json' --data '{"action":"RESTORE","reason":"CI appeal accepted"}' > /tmp/restore.json
+          psql "$DATABASE_URL" -Atc "SELECT status::text FROM rental_items WHERE id='16000000-0000-4000-8000-000000000001'" | grep '^ACTIVE$'
+          curl --fail --silent 'http://127.0.0.1:3000/api/rental-items?q=Moderation%20Camera' > /tmp/public-restored.json
+          node -e 'const d=require("/tmp/public-restored.json"); if(!d.ok || !d.items.some(x=>x.id==="16000000-0000-4000-8000-000000000001")) process.exit(1)'
+      - name: Do not restore owner-paused listings
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE rental_items SET status='PAUSED' WHERE id='16000000-0000-4000-8000-000000000001'"
+          code=$(curl --silent --output /tmp/owner-paused.json --write-out "%{http_code}" -b /tmp/super-cookie.txt -X PATCH http://127.0.0.1:3000/api/admin/listings/16000000-0000-4000-8000-000000000001/moderation -H 'Content-Type: application/json' --data '{"action":"RESTORE","reason":"should not override owner"}')
+          test "$code" = "409"
+          node -e 'const d=require("/tmp/owner-paused.json"); if(d.code!=="NOT_ADMIN_HIDDEN") process.exit(1)'
+      - name: Render real management pages
+        run: |
+          curl --fail --silent -b /tmp/super-cookie.txt 'http://127.0.0.1:3000/admin/users?q=Moderation' > /tmp/admin-users.html
+          curl --fail --silent -b /tmp/super-cookie.txt 'http://127.0.0.1:3000/admin/listings?q=Moderation' > /tmp/admin-listings.html
+          grep -q 'Moderation Target' /tmp/admin-users.html
+          grep -q 'จัดการผู้ใช้งาน' /tmp/admin-users.html
+          grep -q 'Moderation Camera' /tmp/admin-listings.html
+          grep -q 'จัดการประกาศ' /tmp/admin-listings.html
+      - name: Show app log on failure
+        if: failure()
+        run: cat /tmp/moderation-next.log || true

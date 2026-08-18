@@ -45,6 +45,14 @@ export async function requireAdmin(): Promise<AuthUser> {
   return user;
 }
 
+export async function requireSuperadmin(): Promise<AuthUser> {
+  const user = await requireUser();
+  if (user.role !== "SUPERADMIN") {
+    throw new AuthorizationError(403, "FORBIDDEN", "Superadministrator access required");
+  }
+  return user;
+}
+
 export function assertResourceOwner(user: AuthUser, ownerId: string): void {
   if (user.id !== ownerId && user.role !== "ADMIN" && user.role !== "SUPERADMIN") {
     throw new AuthorizationError(403, "FORBIDDEN", "You do not own this resource");
@@ -88,5 +96,11 @@ export async function requireVerifiedUserPage(nextPath: string): Promise<AuthUse
 export async function requireAdminPage(nextPath: string): Promise<AuthUser> {
   const user = await requireUserPage(nextPath);
   if (user.role !== "ADMIN" && user.role !== "SUPERADMIN") redirect("/");
+  return user;
+}
+
+export async function requireSuperadminPage(nextPath: string): Promise<AuthUser> {
+  const user = await requireUserPage(nextPath);
+  if (user.role !== "SUPERADMIN") redirect("/admin");
   return user;
 }
