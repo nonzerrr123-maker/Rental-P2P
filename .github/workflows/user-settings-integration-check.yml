@@ -1,0 +1,114 @@
+name: User settings integration check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/app/settings/**"
+      - "my-app/app/profile/page.tsx"
+      - "my-app/app/api/settings/**"
+      - "my-app/lib/forms/settings.ts"
+      - ".github/workflows/user-settings-integration-check.yml"
+
+jobs:
+  validate-settings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: p2p_rental
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d p2p_rental"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/p2p_rental
+      DATABASE_POOL_MAX: 5
+      NEXT_TELEMETRY_DISABLED: 1
+    defaults:
+      run:
+        working-directory: my-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+      - run: npm ci
+      - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+      - name: Scoped lint
+        run: >-
+          npx eslint
+          lib/forms/settings.ts
+          app/api/settings/profile/route.ts
+          app/api/settings/security/password/route.ts
+          app/api/settings/security/sessions/route.ts
+          app/settings/page.tsx
+          app/settings/profile/page.tsx
+          app/settings/profile/profile-settings-form.tsx
+          app/settings/security/page.tsx
+          app/settings/security/security-settings-client.tsx
+          app/profile/page.tsx
+      - run: npm run build
+      - name: Start application
+        run: |
+          nohup npm run start -- -p 3000 > /tmp/settings-next.log 2>&1 &
+          for attempt in {1..30}; do
+            curl --fail --silent http://127.0.0.1:3000/api/health/db >/dev/null && exit 0
+            sleep 1
+          done
+          cat /tmp/settings-next.log
+          exit 1
+      - name: Guest cannot mutate profile
+        run: |
+          code=$(curl --silent --output /tmp/guest-profile.json --write-out "%{http_code}" -X PATCH http://127.0.0.1:3000/api/settings/profile -H 'Content-Type: application/json' --data '{"displayName":"Guest","phone":"0812345678"}')
+          test "$code" = "401"
+      - name: Register and create two sessions
+        run: |
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register -H 'Content-Type: application/json' --data '{"displayName":"Settings User","email":"settings@example.com","password":"settings-password-123"}' > /tmp/register-settings.json
+          curl --fail --silent -c /tmp/session-a.txt -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"settings@example.com","password":"settings-password-123"}' > /tmp/login-a.json
+          curl --fail --silent -c /tmp/session-b.txt -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"settings@example.com","password":"settings-password-123"}' > /tmp/login-b.json
+          psql "$DATABASE_URL" -Atc "SELECT count(*) FROM user_sessions s JOIN users u ON u.id=s.user_id WHERE u.email='settings@example.com' AND s.revoked_at IS NULL" | grep '^2$'
+      - name: Update profile authoritatively
+        run: |
+          curl --fail --silent -b /tmp/session-b.txt -X PATCH http://127.0.0.1:3000/api/settings/profile -H 'Content-Type: application/json' --data '{"displayName":"Settings Updated","phone":"0812345678"}' > /tmp/profile-updated.json
+          node -e 'const d=require("/tmp/profile-updated.json"); if(!d.ok || d.profile.displayName!=="Settings Updated" || d.profile.phone!=="0812345678") process.exit(1)'
+          psql "$DATABASE_URL" -Atc "SELECT display_name || ':' || phone FROM users WHERE email='settings@example.com'" | grep '^Settings Updated:0812345678$'
+      - name: Reject invalid current password
+        run: |
+          code=$(curl --silent --output /tmp/bad-password.json --write-out "%{http_code}" -b /tmp/session-b.txt -X POST http://127.0.0.1:3000/api/settings/security/password -H 'Content-Type: application/json' --data '{"currentPassword":"wrong","newPassword":"new-settings-password-456","confirmPassword":"new-settings-password-456"}')
+          test "$code" = "400"
+      - name: Change password and revoke other sessions only
+        run: |
+          curl --fail --silent -b /tmp/session-b.txt -X POST http://127.0.0.1:3000/api/settings/security/password -H 'Content-Type: application/json' --data '{"currentPassword":"settings-password-123","newPassword":"new-settings-password-456","confirmPassword":"new-settings-password-456"}' > /tmp/password-changed.json
+          node -e 'const d=require("/tmp/password-changed.json"); if(!d.ok || d.revokedSessions!==1) process.exit(1)'
+          code_a=$(curl --silent --output /tmp/me-a.json --write-out "%{http_code}" -b /tmp/session-a.txt http://127.0.0.1:3000/api/auth/me)
+          test "$code_a" = "401"
+          curl --fail --silent -b /tmp/session-b.txt http://127.0.0.1:3000/api/auth/me > /tmp/me-b.json
+          code_old=$(curl --silent --output /tmp/old-password.json --write-out "%{http_code}" -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"settings@example.com","password":"settings-password-123"}')
+          test "$code_old" = "401"
+      - name: Render settings surfaces
+        run: |
+          curl --fail --silent -b /tmp/session-b.txt http://127.0.0.1:3000/settings > /tmp/settings.html
+          curl --fail --silent -b /tmp/session-b.txt http://127.0.0.1:3000/settings/profile > /tmp/settings-profile.html
+          curl --fail --silent -b /tmp/session-b.txt http://127.0.0.1:3000/settings/security > /tmp/settings-security.html
+          grep -q 'ตั้งค่าบัญชี' /tmp/settings.html
+          grep -q 'โปรไฟล์ของคุณ' /tmp/settings-profile.html
+          grep -q 'ความปลอดภัยของบัญชี' /tmp/settings-security.html
+      - name: Revoke all sessions including current
+        run: |
+          curl --fail --silent -b /tmp/session-b.txt -X DELETE http://127.0.0.1:3000/api/settings/security/sessions > /tmp/revoke-all.json
+          node -e 'const d=require("/tmp/revoke-all.json"); if(!d.ok || d.revokedSessions<1) process.exit(1)'
+          code=$(curl --silent --output /tmp/me-after-revoke.json --write-out "%{http_code}" -b /tmp/session-b.txt http://127.0.0.1:3000/api/auth/me)
+          test "$code" = "401"
+          psql "$DATABASE_URL" -Atc "SELECT count(*) FROM user_sessions s JOIN users u ON u.id=s.user_id WHERE u.email='settings@example.com' AND s.revoked_at IS NULL" | grep '^0$'
+      - name: Show app log on failure
+        if: failure()
+        run: cat /tmp/settings-next.log || true
