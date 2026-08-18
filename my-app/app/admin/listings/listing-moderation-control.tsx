@@ -8,11 +8,12 @@ import { Button } from "@/components/ui/button";
 import { FormField, FormLabel, FormMessage } from "@/components/ui/form-field";
 import { listingModerationSchema, type ListingModerationInput } from "@/lib/forms/moderation";
 
-export default function ListingModerationControl({ itemId, status }: { itemId: string; status: string }) {
+export default function ListingModerationControl({ itemId, status, adminHidden }: { itemId: string; status: string; adminHidden: boolean }) {
   const router = useRouter();
   const [message, setMessage] = useState("");
   const archived = status === "ARCHIVED";
-  const action = status === "PAUSED" ? "RESTORE" : "HIDE";
+  const ownerPaused = status === "PAUSED" && !adminHidden;
+  const action = adminHidden ? "RESTORE" : "HIDE";
   const { register, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<ListingModerationInput>({
     resolver: zodResolver(listingModerationSchema),
     defaultValues: { action, reason: "" },
@@ -35,6 +36,7 @@ export default function ListingModerationControl({ itemId, status }: { itemId: s
   });
 
   if (archived) return <p className="text-xs font-bold text-[var(--muted)]">รายการ Archive แล้ว ไม่เปิดคืนจากหน้านี้</p>;
+  if (ownerPaused) return <p className="text-xs font-bold text-[var(--muted)]">รายการนี้ Pause โดยเจ้าของ/ระบบ จึงไม่เปิด Restore ผ่าน moderation</p>;
 
   return (
     <form onSubmit={submit} className="space-y-2" noValidate>
