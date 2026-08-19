@@ -125,7 +125,7 @@ export default async function PublicUserProfilePage({ params }: { params: Promis
         </section>
 
         <section className="mt-8">
-          <div className="flex items-end justify-between gap-3"><div><p className="bb-label">Listings</p><h2 className="mt-1 text-2xl font-black tracking-[-0.035em]">ของที่กำลังปล่อยยืม</h2></div>{listingsResult.rows.length > 0 && <Link href={`/rent?owner=${profile.id}`} className="text-xs font-black text-[var(--gold-strong)]">ดู Marketplace →</Link>}</div>
+          <div className="flex items-end justify-between gap-3"><div><p className="bb-label">Listings</p><h2 className="mt-1 text-2xl font-black tracking-[-0.035em]">ของที่กำลังปล่อยยืม</h2></div>{listingsResult.rows.length > 0 && <Link href="/rent" className="text-xs font-black text-[var(--gold-strong)]">ดู Marketplace →</Link>}</div>
           {listingsResult.rows.length === 0 ? (
             <div className="mt-4 rounded-2xl border border-dashed border-[var(--line)] bg-white p-8 text-center text-sm text-[var(--muted)]">ยังไม่มีรายการที่เปิดให้ยืมในตอนนี้</div>
           ) : (
