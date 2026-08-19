@@ -23,6 +23,32 @@ function positiveInteger(value: string | undefined, fallback: number): number {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function normalizeConfiguredBaseUrl(value: string | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "https:" && !(process.env.NODE_ENV !== "production" && url.protocol === "http:")) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+export function resolveEmailPublicBaseUrl(request: Request): string {
+  const configured = normalizeConfiguredBaseUrl(process.env.APP_BASE_URL);
+  if (configured) return configured;
+
+  const vercelProductionHost = process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim();
+  if (vercelProductionHost) {
+    const vercelUrl = normalizeConfiguredBaseUrl(`https://${vercelProductionHost}`);
+    if (vercelUrl) return vercelUrl;
+  }
+
+  const requestUrl = new URL(request.url);
+  if (requestUrl.protocol === "https:" || process.env.NODE_ENV !== "production") return requestUrl.origin;
+  throw new Error("A secure public application URL is required for auth email links");
+}
+
 export function getResendConfigurationState(): ResendConfigurationState {
   const apiKey = process.env.RESEND_API_KEY?.trim() ?? "";
   if (!apiKey) {
