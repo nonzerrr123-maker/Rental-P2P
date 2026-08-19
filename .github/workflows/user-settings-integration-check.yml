@@ -5,8 +5,11 @@ on:
     paths:
       - "my-app/app/settings/**"
       - "my-app/app/profile/page.tsx"
+      - "my-app/app/users/**"
+      - "my-app/app/rent/[id]/page.tsx"
       - "my-app/app/api/settings/**"
       - "my-app/lib/forms/settings.ts"
+      - "my-app/docs/migrations/**"
       - ".github/workflows/user-settings-integration-check.yml"
 
 jobs:
@@ -42,7 +45,10 @@ jobs:
           cache: npm
           cache-dependency-path: my-app/package-lock.json
       - run: npm ci
-      - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+      - name: Apply schema and tracked migrations
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+          npm run db:migrate
       - name: Scoped lint
         run: >-
           npx eslint
@@ -56,6 +62,8 @@ jobs:
           app/settings/security/page.tsx
           app/settings/security/security-settings-client.tsx
           app/profile/page.tsx
+          app/users/[id]/page.tsx
+          app/rent/[id]/page.tsx
       - run: npm run build
       - name: Start application
         run: |
@@ -68,7 +76,7 @@ jobs:
           exit 1
       - name: Guest cannot mutate profile
         run: |
-          code=$(curl --silent --output /tmp/guest-profile.json --write-out "%{http_code}" -X PATCH http://127.0.0.1:3000/api/settings/profile -H 'Content-Type: application/json' --data '{"displayName":"Guest","phone":"0812345678"}')
+          code=$(curl --silent --output /tmp/guest-profile.json --write-out "%{http_code}" -X PATCH http://127.0.0.1:3000/api/settings/profile -H 'Content-Type: application/json' --data '{"displayName":"Guest","phone":"0812345678","bio":"guest"}')
           test "$code" = "401"
       - name: Register and create two sessions
         run: |
@@ -78,9 +86,14 @@ jobs:
           psql "$DATABASE_URL" -Atc "SELECT count(*) FROM user_sessions s JOIN users u ON u.id=s.user_id WHERE u.email='settings@example.com' AND s.revoked_at IS NULL" | grep '^2$'
       - name: Update profile authoritatively
         run: |
-          curl --fail --silent -b /tmp/session-b.txt -X PATCH http://127.0.0.1:3000/api/settings/profile -H 'Content-Type: application/json' --data '{"displayName":"Settings Updated","phone":"0812345678"}' > /tmp/profile-updated.json
-          node -e 'const d=require("/tmp/profile-updated.json"); if(!d.ok || d.profile.displayName!=="Settings Updated" || d.profile.phone!=="0812345678") process.exit(1)'
-          psql "$DATABASE_URL" -Atc "SELECT display_name || ':' || phone FROM users WHERE email='settings@example.com'" | grep '^Settings Updated:0812345678$'
+          curl --fail --silent -b /tmp/session-b.txt -X PATCH http://127.0.0.1:3000/api/settings/profile -H 'Content-Type: application/json' --data '{"displayName":"Settings Updated","phone":"0812345678","bio":"คนชลบุรี ชอบอุปกรณ์แคมป์ปิ้งและดูแลของทุกชิ้นเอง"}' > /tmp/profile-updated.json
+          node -e 'const d=require("/tmp/profile-updated.json"); if(!d.ok || d.profile.displayName!=="Settings Updated" || d.profile.phone!=="0812345678" || !d.profile.bio.includes("ชลบุรี")) process.exit(1)'
+          psql "$DATABASE_URL" -Atc "SELECT display_name || ':' || phone || ':' || bio FROM users WHERE email='settings@example.com'" | grep 'Settings Updated:0812345678:คนชลบุรี'
+      - name: Seed public trust data
+        run: |
+          user_id=$(psql "$DATABASE_URL" -Atc "SELECT id FROM users WHERE email='settings@example.com'")
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE users SET verification_status='VERIFIED', rating_average=5.00, rating_count=1 WHERE id='$user_id'; INSERT INTO rental_items(owner_id,title,category,description,condition,daily_rate,province) VALUES ('$user_id','Public Profile Tent','แคมป์ปิ้ง','เต็นท์สำหรับทดสอบ public profile','GOOD',350,'ชลบุรี');"
+          echo "$user_id" > /tmp/settings-user-id
       - name: Reject invalid current password
         run: |
           code=$(curl --silent --output /tmp/bad-password.json --write-out "%{http_code}" -b /tmp/session-b.txt -X POST http://127.0.0.1:3000/api/settings/security/password -H 'Content-Type: application/json' --data '{"currentPassword":"wrong","newPassword":"new-settings-password-456","confirmPassword":"new-settings-password-456"}')
@@ -94,14 +107,24 @@ jobs:
           curl --fail --silent -b /tmp/session-b.txt http://127.0.0.1:3000/api/auth/me > /tmp/me-b.json
           code_old=$(curl --silent --output /tmp/old-password.json --write-out "%{http_code}" -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"settings@example.com","password":"settings-password-123"}')
           test "$code_old" = "401"
-      - name: Render settings surfaces
+      - name: Render account and public profile surfaces
         run: |
+          user_id=$(cat /tmp/settings-user-id)
           curl --fail --silent -b /tmp/session-b.txt http://127.0.0.1:3000/settings > /tmp/settings.html
           curl --fail --silent -b /tmp/session-b.txt http://127.0.0.1:3000/settings/profile > /tmp/settings-profile.html
           curl --fail --silent -b /tmp/session-b.txt http://127.0.0.1:3000/settings/security > /tmp/settings-security.html
+          curl --fail --silent -b /tmp/session-b.txt http://127.0.0.1:3000/profile > /tmp/profile.html
+          curl --fail --silent http://127.0.0.1:3000/users/$user_id > /tmp/public-profile.html
           grep -q 'ตั้งค่าบัญชี' /tmp/settings.html
+          grep -q 'การแจ้งเตือน' /tmp/settings.html
           grep -q 'โปรไฟล์ของคุณ' /tmp/settings-profile.html
+          grep -q 'Public Profile' /tmp/settings-profile.html
           grep -q 'ความปลอดภัยของบัญชี' /tmp/settings-security.html
+          grep -q 'ความสมบูรณ์โปรไฟล์' /tmp/profile.html
+          grep -q 'Public Profile Tent' /tmp/public-profile.html
+          grep -q 'คนชลบุรี' /tmp/public-profile.html
+          ! grep -q 'settings@example.com' /tmp/public-profile.html
+          ! grep -q '0812345678' /tmp/public-profile.html
       - name: Revoke all sessions including current
         run: |
           curl --fail --silent -b /tmp/session-b.txt -X DELETE http://127.0.0.1:3000/api/settings/security/sessions > /tmp/revoke-all.json
