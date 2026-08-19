@@ -1,0 +1,199 @@
+name: Resend email auth integration check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/**"
+      - ".github/workflows/resend-email-auth-integration-check.yml"
+  push:
+    branches: [main]
+    paths:
+      - "my-app/**"
+      - ".github/workflows/resend-email-auth-integration-check.yml"
+
+jobs:
+  validate-resend-email-auth:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: p2p_rental
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d p2p_rental"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/p2p_rental
+      DATABASE_POOL_MAX: 6
+      KYC_PROVIDER: manual
+      RESEND_API_BASE_URL: http://127.0.0.1:4200
+      RESEND_API_KEY: re_test_ci_only
+      EMAIL_FROM: Borow Borow <onboarding@resend.dev>
+      EMAIL_REQUIRE_VERIFICATION: true
+      EMAIL_VERIFICATION_TTL_MINUTES: 1440
+      PASSWORD_RESET_TTL_MINUTES: 30
+      AUTH_EMAIL_RESEND_COOLDOWN_SECONDS: 60
+      APP_BASE_URL: http://127.0.0.1:3000
+      NEXT_TELEMETRY_DISABLED: 1
+    defaults:
+      run:
+        working-directory: my-app
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Apply schema and email auth migration
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/migrations/20260819_task19_email_auth.sql
+      - name: Lint email auth scope
+        run: >-
+          npx eslint
+          lib/auth/action-tokens.ts
+          lib/email/resend.ts
+          lib/email/messages.ts
+          lib/email/auth-workflows.ts
+          lib/forms/auth.ts
+          app/api/auth/register/route.ts
+          app/api/auth/login/route.ts
+          app/api/auth/email/resend-verification/route.ts
+          app/api/auth/email/verify/route.ts
+          app/api/auth/password/forgot/route.ts
+          app/api/auth/password/reset/route.ts
+          app/login/page.tsx
+          app/register/page.tsx
+          app/verify-email/page.tsx
+          app/forgot-password/page.tsx
+          app/reset-password/page.tsx
+          scripts/mock-resend-server.mjs
+      - name: Build application
+        run: npm run build
+      - name: Start Resend mock and application
+        run: |
+          nohup node scripts/mock-resend-server.mjs >/tmp/mock-resend.log 2>&1 &
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:4200/__emails >/dev/null; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:4200/__emails >/dev/null
+          nohup npm run start -- -p 3000 >/tmp/resend-next.log 2>&1 &
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/api/health/db >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/resend-next.log
+          exit 1
+      - name: Register and send one verification email
+        run: |
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register \
+            -H 'Content-Type: application/json' \
+            --data '{"displayName":"Email Journey","email":"email-journey@example.com","password":"email-password-123"}' >/tmp/email-register.json
+          node -e 'const d=require("/tmp/email-register.json"); if(!d.ok||!d.emailVerification?.required||!d.emailVerification?.sent)process.exit(1)'
+          curl --fail --silent http://127.0.0.1:4200/__emails >/tmp/email-outbox.json
+          node - <<'NODE'
+          const fs=require('fs'); const d=require('/tmp/email-outbox.json');
+          if(d.emails.length!==1)process.exit(1);
+          const m=d.emails[0];
+          if(!m.idempotencyKey.startsWith('email-verify/')||!String(m.userAgent).startsWith('borow-borow/')||!m.subject.includes('ยืนยันอีเมล'))process.exit(1);
+          const match=m.html.match(/verify-email\?token=([A-Za-z0-9_-]+)/);
+          if(!match)process.exit(1);
+          fs.writeFileSync('/tmp/email-verify-token',match[1]);
+          NODE
+          token=$(cat /tmp/email-verify-token)
+          test "$(psql "$DATABASE_URL" -Atc "SELECT length(token_hash) FROM auth_action_tokens WHERE purpose='EMAIL_VERIFY'")" = "64"
+          ! psql "$DATABASE_URL" -Atc "SELECT token_hash FROM auth_action_tokens" | grep -F "$token"
+      - name: Require email verification before login when enforcement is enabled
+        run: |
+          code=$(curl --silent --output /tmp/email-login-blocked.json --write-out '%{http_code}' -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"email-journey@example.com","password":"email-password-123"}')
+          test "$code" = "403"
+          node -e 'const d=require("/tmp/email-login-blocked.json"); if(d.code!=="EMAIL_VERIFICATION_REQUIRED")process.exit(1)'
+      - name: Consume verification token once and allow login
+        run: |
+          token=$(cat /tmp/email-verify-token)
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/email/verify \
+            -H 'Content-Type: application/json' \
+            --data "{\"token\":\"$token\"}" >/tmp/email-verified.json
+          node -e 'const d=require("/tmp/email-verified.json"); if(!d.ok)process.exit(1)'
+          code=$(curl --silent --output /tmp/email-reuse.json --write-out '%{http_code}' -X POST http://127.0.0.1:3000/api/auth/email/verify \
+            -H 'Content-Type: application/json' \
+            --data "{\"token\":\"$token\"}")
+          test "$code" = "400"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM user_email_verifications uev JOIN users u ON u.id=uev.user_id WHERE u.email='email-journey@example.com'")" = "1"
+          curl --fail --silent -c /tmp/email-user.cookies -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"email-journey@example.com","password":"email-password-123"}' >/tmp/email-login-ok.json
+          node -e 'const d=require("/tmp/email-login-ok.json"); if(!d.ok)process.exit(1)'
+      - name: Forgot password does not disclose unknown accounts
+        run: |
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/password/forgot \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"missing-email-journey@example.com"}' >/tmp/email-forgot-missing.json
+          node -e 'const d=require("/tmp/email-forgot-missing.json"); if(!d.ok||!d.message)process.exit(1)'
+          curl --fail --silent http://127.0.0.1:4200/__emails >/tmp/email-after-missing.json
+          node -e 'const d=require("/tmp/email-after-missing.json");if(d.emails.length!==1)process.exit(1)'
+      - name: Reset password, revoke sessions, and consume reset token once
+        run: |
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/password/forgot \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"email-journey@example.com"}' >/tmp/email-forgot.json
+          curl --fail --silent http://127.0.0.1:4200/__emails >/tmp/email-reset-outbox.json
+          node - <<'NODE'
+          const fs=require('fs'); const d=require('/tmp/email-reset-outbox.json');
+          if(d.emails.length!==2)process.exit(1);
+          const m=d.emails[1];
+          if(!m.idempotencyKey.startsWith('password-reset/')||!m.subject.includes('รหัสผ่าน'))process.exit(1);
+          const match=m.html.match(/reset-password\?token=([A-Za-z0-9_-]+)/);
+          if(!match)process.exit(1);
+          fs.writeFileSync('/tmp/email-reset-token',match[1]);
+          NODE
+          token=$(cat /tmp/email-reset-token)
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/password/reset \
+            -H 'Content-Type: application/json' \
+            --data "{\"token\":\"$token\",\"password\":\"new-email-password-456\"}" >/tmp/email-reset.json
+          node -e 'const d=require("/tmp/email-reset.json");if(!d.ok)process.exit(1)'
+          code=$(curl --silent --output /tmp/email-old-session.json --write-out '%{http_code}' -b /tmp/email-user.cookies http://127.0.0.1:3000/api/auth/me)
+          test "$code" = "401"
+          code=$(curl --silent --output /tmp/email-old-password.json --write-out '%{http_code}' -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"email-journey@example.com","password":"email-password-123"}')
+          test "$code" = "401"
+          curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"email-journey@example.com","password":"new-email-password-456"}' >/tmp/email-new-password.json
+          node -e 'const d=require("/tmp/email-new-password.json");if(!d.ok)process.exit(1)'
+          code=$(curl --silent --output /tmp/email-reset-reuse.json --write-out '%{http_code}' -X POST http://127.0.0.1:3000/api/auth/password/reset \
+            -H 'Content-Type: application/json' \
+            --data "{\"token\":\"$token\",\"password\":\"another-password-789\"}")
+          test "$code" = "400"
+          curl --fail --silent http://127.0.0.1:4200/__emails >/tmp/email-final-outbox.json
+          node -e 'const d=require("/tmp/email-final-outbox.json");if(d.emails.length!==3||!d.emails[2].idempotencyKey.startsWith("password-changed/"))process.exit(1)'
+      - name: Auth email pages render
+        run: |
+          for path in login register verify-email forgot-password reset-password; do
+            curl --fail --silent "http://127.0.0.1:3000/$path" > "/tmp/email-$path.html"
+          done
+          grep -q 'ลืมรหัสผ่าน' /tmp/email-login.html
+          grep -q 'ยืนยันอีเมล' /tmp/email-verify-email.html
+          grep -q 'ตั้งรหัสผ่านใหม่' /tmp/email-reset-password.html
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          cat /tmp/resend-next.log || true
+          cat /tmp/mock-resend.log || true

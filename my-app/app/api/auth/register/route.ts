@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import type { QueryResultRow } from "pg";
 import { query } from "@/lib/db";
 import { hashPassword } from "@/lib/auth/password";
+import { sendVerificationForUser } from "@/lib/email/auth-workflows";
+import { isEmailVerificationRequired, resolveEmailPublicBaseUrl } from "@/lib/email/resend";
 
 export const runtime = "nodejs";
 
@@ -46,6 +48,26 @@ export async function POST(request: Request) {
       [email, passwordHash, displayName],
     );
     const user = result.rows[0];
+    const verificationRequired = isEmailVerificationRequired();
+
+    let emailVerificationSent = false;
+    try {
+      const emailVerification = await sendVerificationForUser({
+        userId: user.id,
+        email: user.email,
+        displayName: user.display_name,
+        baseUrl: resolveEmailPublicBaseUrl(request),
+        enforceCooldown: false,
+      });
+      emailVerificationSent = emailVerification.sent;
+    } catch (error) {
+      // Registration is authoritative once the user row is persisted. Email delivery
+      // and its supporting migration are deliberately best-effort during rollout.
+      console.error("Registration verification email could not be started", {
+        name: error instanceof Error ? error.name : "UnknownError",
+        code: typeof error === "object" && error !== null && "code" in error ? error.code : undefined,
+      });
+    }
 
     return NextResponse.json(
       {
@@ -57,7 +79,11 @@ export async function POST(request: Request) {
           role: user.role,
           verificationStatus: user.verification_status,
         },
-        redirect: "/login",
+        emailVerification: {
+          required: verificationRequired,
+          sent: emailVerificationSent,
+        },
+        redirect: verificationRequired ? `/verify-email?email=${encodeURIComponent(user.email)}` : "/login",
       },
       { status: 201 },
     );

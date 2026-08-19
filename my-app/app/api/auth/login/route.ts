@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import type { QueryResultRow } from "pg";
 import { query } from "@/lib/db";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
+import { isUserEmailVerified } from "@/lib/email/auth-workflows";
+import { isEmailVerificationRequired } from "@/lib/email/resend";
 import {
   createSession,
   getLoginRedirect,
@@ -89,6 +91,17 @@ export async function POST(request: Request) {
     }
     if (!bootstrapped && !(await verifyPassword(password, userRow.password_hash))) {
       return NextResponse.json({ ok: false, message: "อีเมลหรือรหัสผ่านไม่ถูกต้อง" }, { status: 401 });
+    }
+    if (!bootstrapped && isEmailVerificationRequired() && !(await isUserEmailVerified(userRow.id))) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "EMAIL_VERIFICATION_REQUIRED",
+          message: "กรุณายืนยันอีเมลก่อนเข้าสู่ระบบ",
+          verificationEmail: userRow.email,
+        },
+        { status: 403 },
+      );
     }
 
     const user = toAuthUser(userRow);
