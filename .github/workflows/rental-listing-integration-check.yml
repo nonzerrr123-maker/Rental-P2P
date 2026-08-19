@@ -58,12 +58,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Apply PostgreSQL schema
-        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+      - name: Apply PostgreSQL schema and tracked migrations
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+          npm run db:migrate
 
       - name: Lint rental listing scope
         run: >-
           npx eslint
+          lib/rental/fees.ts
           lib/rental/listings.ts
           app/api/rental-items/route.ts
           app/api/rental-items/mine/route.ts
@@ -126,20 +129,29 @@ jobs:
           test "$code" = "400"
           node -e 'const d=require("/tmp/listing-location.json"); if(!d.fieldErrors.locationCoordinates) process.exit(1)'
 
-      - name: Create real listing and ignore client owner id
+      - name: Create real listing and force fixed urgent fee
         run: |
           curl --fail --silent -b /tmp/listing-user-cookies.txt -X POST http://127.0.0.1:3000/api/rental-items \
             -H 'Content-Type: application/json' \
-            --data '{"ownerId":"00000000-0000-0000-0000-000000000001","title":"Sony A7III","category":"กล้องและอุปกรณ์ถ่ายภาพ","description":"กล้องสภาพดี พร้อมแบตเตอรี่สองก้อนและสายคล้อง","condition":"GOOD","hourlyRate":80,"dailyRate":650,"minimumHours":2,"depositAmount":3000,"urgentEnabled":true,"urgentReservationFeeRate":0.05,"province":"ชลบุรี","district":"เมืองชลบุรี","subdistrict":"แสนสุข","locationLabel":"ใกล้บางแสน","latitude":13.2858,"longitude":100.9242}' >/tmp/listing-created.json
-          node -e 'const d=require("/tmp/listing-created.json"); if(!d.ok || d.item.title!=="Sony A7III" || d.item.status!=="ACTIVE" || !d.item.urgentEnabled) process.exit(1); require("fs").writeFileSync("/tmp/listing-id",d.item.id); require("fs").writeFileSync("/tmp/response-owner-id",d.item.ownerId)'
+            --data '{"ownerId":"00000000-0000-0000-0000-000000000001","title":"Sony A7III","category":"กล้องและอุปกรณ์ถ่ายภาพ","description":"กล้องสภาพดี พร้อมแบตเตอรี่สองก้อนและสายคล้อง","condition":"GOOD","hourlyRate":80,"dailyRate":650,"minimumHours":2,"depositAmount":3000,"urgentEnabled":true,"urgentReservationFeeRate":0.99,"province":"ชลบุรี","district":"เมืองชลบุรี","subdistrict":"แสนสุข","locationLabel":"ใกล้บางแสน","latitude":13.2858,"longitude":100.9242}' >/tmp/listing-created.json
+          node -e 'const d=require("/tmp/listing-created.json"); if(!d.ok || d.item.title!=="Sony A7III" || d.item.status!=="ACTIVE" || !d.item.urgentEnabled || d.item.urgentReservationFeeRate!=="0.0500") process.exit(1); require("fs").writeFileSync("/tmp/listing-id",d.item.id); require("fs").writeFileSync("/tmp/response-owner-id",d.item.ownerId)'
           test "$(cat /tmp/response-owner-id)" = "$(cat /tmp/listing-user-id)"
           test "$(psql "$DATABASE_URL" -Atc "SELECT owner_id FROM rental_items WHERE id='$(cat /tmp/listing-id)'")" = "$(cat /tmp/listing-user-id)"
-          test "$(psql "$DATABASE_URL" -Atc "SELECT hourly_rate || '|' || daily_rate || '|' || minimum_hours || '|' || urgent_enabled || '|' || province FROM rental_items WHERE id='$(cat /tmp/listing-id)'")" = "80.00|650.00|2|true|ชลบุรี"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT hourly_rate || '|' || daily_rate || '|' || minimum_hours || '|' || urgent_enabled || '|' || urgent_reservation_fee_rate || '|' || province FROM rental_items WHERE id='$(cat /tmp/listing-id)'")" = "80.00|650.00|2|true|0.0500|ชลบุรี"
+
+      - name: Database rejects non-five-percent urgent fee
+        run: |
+          item_id=$(cat /tmp/listing-id)
+          if psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE rental_items SET urgent_reservation_fee_rate=0.9900 WHERE id='$item_id';"; then
+            echo "database accepted a non-five-percent urgent fee"
+            exit 1
+          fi
+          test "$(psql "$DATABASE_URL" -Atc "SELECT urgent_reservation_fee_rate FROM rental_items WHERE id='$item_id'")" = "0.0500"
 
       - name: Owner endpoint returns only current users listings
         run: |
           curl --fail --silent -b /tmp/listing-user-cookies.txt http://127.0.0.1:3000/api/rental-items/mine >/tmp/listing-mine.json
-          node -e 'const d=require("/tmp/listing-mine.json"); if(!d.ok || d.items.length!==1 || d.items[0].title!=="Sony A7III") process.exit(1)'
+          node -e 'const d=require("/tmp/listing-mine.json"); if(!d.ok || d.items.length!==1 || d.items[0].title!=="Sony A7III" || d.items[0].urgentReservationFeeRate!=="0.0500") process.exit(1)'
 
           curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register \
             -H 'Content-Type: application/json' \
@@ -163,7 +175,7 @@ jobs:
           curl --fail --silent -b /tmp/listing-admin-cookies.txt -X POST http://127.0.0.1:3000/api/rental-items \
             -H 'Content-Type: application/json' \
             --data '{"title":"Admin Test Item","category":"เครื่องมือ","description":"รายการสำหรับทดสอบสิทธิ์ผู้ดูแลระบบ","condition":"LIKE_NEW","dailyRate":100,"minimumHours":1,"depositAmount":0,"province":"ชลบุรี"}' >/tmp/listing-admin-item.json
-          node -e 'const d=require("/tmp/listing-admin-item.json"); if(!d.ok || d.item.title!=="Admin Test Item") process.exit(1)'
+          node -e 'const d=require("/tmp/listing-admin-item.json"); if(!d.ok || d.item.title!=="Admin Test Item" || d.item.urgentReservationFeeRate!=="0.0500") process.exit(1)'
 
       - name: Show Next.js log on failure
         if: failure()

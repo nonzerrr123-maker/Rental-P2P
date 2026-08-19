@@ -6,6 +6,7 @@ import {
   requireVerifiedUser,
 } from "@/lib/auth/authorization";
 import { query } from "@/lib/db";
+import { URGENT_RESERVATION_FEE_RATE_DB } from "@/lib/rental/fees";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -38,15 +39,6 @@ export async function PATCH(
       return NextResponse.json({ ok: false, code: "VALIDATION_ERROR", message: "enabled must be boolean" }, { status: 400 });
     }
 
-    let rate: number | null = null;
-    if (input.feeRate !== undefined) {
-      const parsed = typeof input.feeRate === "number" ? input.feeRate : Number(input.feeRate);
-      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
-        return NextResponse.json({ ok: false, code: "VALIDATION_ERROR", message: "feeRate must be between 0 and 1" }, { status: 400 });
-      }
-      rate = parsed;
-    }
-
     const owner = await query<ItemOwnerRow>("SELECT owner_id FROM rental_items WHERE id = $1 LIMIT 1", [id]);
     if (!owner.rows[0]) {
       return NextResponse.json({ ok: false, code: "NOT_FOUND", message: "Rental item not found" }, { status: 404 });
@@ -56,11 +48,11 @@ export async function PATCH(
     const updated = await query<UpdatedRow>(
       `UPDATE rental_items
        SET urgent_enabled = $2,
-           urgent_reservation_fee_rate = COALESCE($3::numeric, urgent_reservation_fee_rate),
+           urgent_reservation_fee_rate = $3::numeric,
            updated_at = now()
        WHERE id = $1
        RETURNING id, urgent_enabled, urgent_reservation_fee_rate`,
-      [id, input.enabled, rate],
+      [id, input.enabled, URGENT_RESERVATION_FEE_RATE_DB],
     );
     const item = updated.rows[0];
     return NextResponse.json({

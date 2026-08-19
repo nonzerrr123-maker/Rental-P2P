@@ -6,6 +6,7 @@ import {
   type RentalRequestSummary,
   type RentalRequestStatus,
 } from "@/lib/rental/bookings";
+import { URGENT_RESERVATION_FEE_RATE_DB } from "@/lib/rental/fees";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -29,7 +30,6 @@ type UrgentItemRow = QueryResultRow & {
   minimum_hours: number;
   deposit_amount: string;
   urgent_enabled: boolean;
-  urgent_reservation_fee_rate: string;
   owner_active: boolean;
 };
 
@@ -245,7 +245,6 @@ export async function createUrgentRentalRequest(borrowerId: string, input: unkno
            i.minimum_hours,
            i.deposit_amount,
            i.urgent_enabled,
-           i.urgent_reservation_fee_rate,
            owner.is_active AS owner_active
          FROM rental_items i
          JOIN users owner ON owner.id = i.owner_id
@@ -284,7 +283,7 @@ export async function createUrgentRentalRequest(borrowerId: string, input: unkno
       }
 
       const rentalAmount = moneyFromRate(rate, durationUnits);
-      const urgentFee = feeFromAmount(rentalAmount, item.urgent_reservation_fee_rate);
+      const urgentFee = feeFromAmount(rentalAmount, URGENT_RESERVATION_FEE_RATE_DB);
       const expiresAt = new Date(Date.now() + reservationTtlMinutes() * 60_000);
       const inserted = await client.query<{ id: string } & QueryResultRow>(
         `INSERT INTO rental_requests (

@@ -1,5 +1,6 @@
 import type { QueryResultRow } from "pg";
 import { query } from "@/lib/db";
+import { URGENT_RESERVATION_FEE_RATE_DB } from "@/lib/rental/fees";
 
 export const ITEM_CONDITIONS = ["NEW", "LIKE_NEW", "GOOD", "FAIR", "USED"] as const;
 export type ItemCondition = (typeof ITEM_CONDITIONS)[number];
@@ -243,14 +244,7 @@ export function validateRentalListingInput(input: unknown): ValidatedRentalListi
     }) ?? "0.00";
 
   const urgentEnabled = body.urgentEnabled === true;
-  const rawUrgentRate = body.urgentReservationFeeRate ?? 0.05;
-  const urgentRateNumber = typeof rawUrgentRate === "number" ? rawUrgentRate : Number(String(rawUrgentRate).trim());
-  let urgentReservationFeeRate = "0.0500";
-  if (!Number.isFinite(urgentRateNumber) || urgentRateNumber < 0 || urgentRateNumber > 1) {
-    errors.urgentReservationFeeRate = "ค่าจองด่วนต้องอยู่ระหว่าง 0% ถึง 100%";
-  } else {
-    urgentReservationFeeRate = urgentRateNumber.toFixed(4);
-  }
+  const urgentReservationFeeRate = URGENT_RESERVATION_FEE_RATE_DB;
 
   const latitude = coordinateValue(body.latitude, "latitude", errors);
   const longitude = coordinateValue(body.longitude, "longitude", errors);
