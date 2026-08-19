@@ -9,7 +9,7 @@ const optionalPhone = z
 export const profileSettingsSchema = z.object({
   displayName: z.string().trim().min(2, "ชื่ออย่างน้อย 2 ตัวอักษร").max(80, "ชื่อยาวเกิน 80 ตัวอักษร"),
   phone: optionalPhone,
-  bio: z.string().trim().max(500, "แนะนำตัวได้ไม่เกิน 500 ตัวอักษร").default(""),
+  bio: z.string().trim().max(500, "แนะนำตัวได้ไม่เกิน 500 ตัวอักษร").optional(),
 });
 
 export const passwordSettingsSchema = z
