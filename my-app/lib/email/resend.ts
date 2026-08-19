@@ -23,11 +23,17 @@ function positiveInteger(value: string | undefined, fallback: number): number {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]" || hostname === "::1";
+}
+
 function normalizeConfiguredBaseUrl(value: string | undefined): string | null {
   if (!value) return null;
   try {
     const url = new URL(value.trim());
-    if (url.protocol !== "https:" && !(process.env.NODE_ENV !== "production" && url.protocol === "http:")) return null;
+    const secure = url.protocol === "https:";
+    const localLoopback = url.protocol === "http:" && isLoopbackHostname(url.hostname);
+    if (!secure && !localLoopback) return null;
     return url.origin;
   } catch {
     return null;
@@ -45,7 +51,9 @@ export function resolveEmailPublicBaseUrl(request: Request): string {
   }
 
   const requestUrl = new URL(request.url);
-  if (requestUrl.protocol === "https:" || process.env.NODE_ENV !== "production") return requestUrl.origin;
+  const requestIsSecure = requestUrl.protocol === "https:";
+  const requestIsLoopback = requestUrl.protocol === "http:" && isLoopbackHostname(requestUrl.hostname);
+  if (requestIsSecure || requestIsLoopback) return requestUrl.origin;
   throw new Error("A secure public application URL is required for auth email links");
 }
 
