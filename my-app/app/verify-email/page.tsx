@@ -110,7 +110,7 @@ export default function VerifyEmailPage() {
                     <Input id="verify-email-resend" type="email" autoComplete="email" inputMode="email" placeholder="you@example.com" aria-invalid={Boolean(errors.email)} {...register("email")} />
                     <FormMessage>{errors.email?.message}</FormMessage>
                   </FormField>
-                  <Button type="submit" variant="secondary" disabled={isSubmitting} className="w-full">{isSubmitting ? "กำลังส่ง..." : "ส่งลิงก์ยืนยันอีกครั้ง"}</Button>
+                  <Button type="submit" variant="outline" disabled={isSubmitting} className="w-full">{isSubmitting ? "กำลังส่ง..." : "ส่งลิงก์ยืนยันอีกครั้ง"}</Button>
                   {resendMessage && <p role="status" className="rounded-xl bg-[var(--surface-2)] p-3 text-xs font-semibold leading-5 text-[var(--muted-strong)]">{resendMessage}</p>}
                 </form>
               </div>
