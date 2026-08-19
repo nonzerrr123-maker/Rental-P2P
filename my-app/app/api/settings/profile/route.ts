@@ -25,7 +25,7 @@ export async function PATCH(request: Request) {
     }
 
     const phone = parsed.data.phone === "" ? null : parsed.data.phone;
-    const bio = parsed.data.bio === "" ? null : parsed.data.bio;
+    const bio = parsed.data.bio?.trim() ? parsed.data.bio : null;
     const result = await query<ProfileRow>(
       `UPDATE users
        SET display_name = $2,
