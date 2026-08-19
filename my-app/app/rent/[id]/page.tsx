@@ -1,9 +1,11 @@
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import type { QueryResultRow } from "pg";
 import SiteHeader from "@/components/site-header";
 import { BoltIcon, ChevronLeftIcon, ImageIcon, MapPinIcon, ShieldCheckIcon, StarIcon } from "@/components/ui/icons";
 import { StatusPill } from "@/components/ui/primitives";
+import { query } from "@/lib/db";
 import { getPublicRentalItem } from "@/lib/rental/marketplace";
 import { BookingForm } from "./booking-form";
 import { UrgentBookingForm } from "./urgent-booking-form";
@@ -11,10 +13,14 @@ import { UrgentBookingForm } from "./urgent-booking-form";
 const money = new Intl.NumberFormat("th-TH", { maximumFractionDigits: 2 });
 const conditionLabels: Record<string, string> = { NEW: "ใหม่", LIKE_NEW: "เหมือนใหม่", GOOD: "สภาพดี", FAIR: "พอใช้", USED: "มีร่องรอยใช้งาน" };
 
+type OwnerIdRow = QueryResultRow & { owner_id: string };
+
 export default async function RentalDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const item = await getPublicRentalItem(id);
   if (!item) notFound();
+  const ownerResult = await query<OwnerIdRow>("SELECT owner_id FROM rental_items WHERE id=$1 LIMIT 1", [id]);
+  const ownerId = ownerResult.rows[0]?.owner_id;
   const location = [item.subdistrict, item.district, item.province].filter(Boolean).join(" · ");
   const urgentPercent = Number(item.urgentReservationFeeRate) * 100;
 
@@ -37,7 +43,7 @@ export default async function RentalDetail({ params }: { params: Promise<{ id: s
               <p className="mt-5 whitespace-pre-wrap text-sm leading-7 text-[var(--muted-strong)] sm:text-base">{item.description}</p>
               <div className="mt-6 grid gap-3 border-t border-[var(--line)] pt-5 sm:grid-cols-2">
                 <div className="flex items-start gap-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[var(--surface-2)] text-[var(--gold-strong)]"><MapPinIcon size={18}/></span><div><p className="text-xs font-bold text-[var(--muted)]">พื้นที่โดยประมาณ</p><p className="mt-1 text-sm font-black">{location}</p><p className="mt-1 text-[11px] leading-4 text-[var(--muted)]">พิกัดนัดรับละเอียดไม่เปิดต่อสาธารณะ</p></div></div>
-                <div className="flex items-start gap-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[var(--surface-2)] text-[var(--gold-strong)]"><ShieldCheckIcon size={18}/></span><div><p className="text-xs font-bold text-[var(--muted)]">ผู้ให้ยืม</p><p className="mt-1 flex items-center gap-1.5 text-sm font-black">{item.owner.displayName}{item.owner.verified && <ShieldCheckIcon size={14} className="text-[var(--gold-strong)]"/>}</p>{item.owner.ratingCount > 0 && <p className="mt-1 flex items-center gap-1 text-[11px] text-[var(--muted)]"><StarIcon size={12}/>{Number(item.owner.ratingAverage).toFixed(1)} · {item.owner.ratingCount} รีวิว</p>}</div></div>
+                <div className="flex items-start gap-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[var(--surface-2)] text-[var(--gold-strong)]"><ShieldCheckIcon size={18}/></span><div><p className="text-xs font-bold text-[var(--muted)]">ผู้ให้ยืม</p>{ownerId ? <Link href={`/users/${ownerId}`} className="mt-1 inline-flex items-center gap-1.5 text-sm font-black hover:text-[var(--gold-strong)]">{item.owner.displayName}{item.owner.verified && <ShieldCheckIcon size={14} className="text-[var(--gold-strong)]"/>}</Link> : <p className="mt-1 flex items-center gap-1.5 text-sm font-black">{item.owner.displayName}</p>}{item.owner.ratingCount > 0 && <p className="mt-1 flex items-center gap-1 text-[11px] text-[var(--muted)]"><StarIcon size={12}/>{Number(item.owner.ratingAverage).toFixed(1)} · {item.owner.ratingCount} รีวิว</p>}{ownerId && <Link href={`/users/${ownerId}`} className="mt-2 inline-block text-[11px] font-black text-[var(--gold-strong)]">ดูโปรไฟล์และรีวิว →</Link>}</div></div>
               </div>
             </article>
           </section>
