@@ -18,7 +18,6 @@ function isActive(pathname: string, href: string) {
 
 export default function SiteHeader() {
   const pathname = usePathname();
-  const urgentActive = pathname === "/rent" && typeof window !== "undefined" && new URLSearchParams(window.location.search).get("urgent") === "true";
 
   return (
     <header className="sticky top-0 z-50 border-b border-[var(--line)] bg-[color:rgba(250,249,246,0.94)] backdrop-blur-xl">
@@ -41,10 +40,7 @@ export default function SiteHeader() {
               </Link>
             );
           })}
-          <Link
-            href="/rent?urgent=true"
-            className={`inline-flex h-10 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl px-3.5 text-sm font-extrabold transition ${urgentActive ? "bg-[var(--gold-soft)] text-[var(--gold-strong)] ring-1 ring-[var(--gold-line)]" : "text-[var(--gold-strong)] hover:bg-[var(--gold-soft)]"}`}
-          >
+          <Link href="/rent?urgent=true" className="inline-flex h-10 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl px-3.5 text-sm font-extrabold text-[var(--gold-strong)] transition hover:bg-[var(--gold-soft)]">
             <BoltIcon size={17} />
             <span>ยืมด่วน</span>
           </Link>
@@ -65,12 +61,7 @@ export default function SiteHeader() {
               </Link>
             );
           })}
-          <Link
-            href="/rent?urgent=true"
-            aria-label="ยืมด่วน"
-            title="ยืมด่วน"
-            className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl transition ${urgentActive ? "bg-[var(--gold-soft)] text-[var(--gold-strong)] ring-1 ring-[var(--gold-line)]" : "text-[var(--gold-strong)] hover:bg-[var(--gold-soft)]"}`}
-          >
+          <Link href="/rent?urgent=true" aria-label="ยืมด่วน" title="ยืมด่วน" className="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-[var(--gold-strong)] transition hover:bg-[var(--gold-soft)]">
             <BoltIcon size={18} />
           </Link>
         </nav>
@@ -96,10 +87,7 @@ export default function SiteHeader() {
               </Link>
             );
           })}
-          <Link
-            href="/rent?urgent=true"
-            className={`inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl px-3 text-xs font-extrabold transition ${urgentActive ? "bg-[var(--gold-soft)] text-[var(--gold-strong)] ring-1 ring-[var(--gold-line)]" : "text-[var(--gold-strong)]"}`}
-          >
+          <Link href="/rent?urgent=true" className="inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl px-3 text-xs font-extrabold text-[var(--gold-strong)] transition">
             <BoltIcon size={15} />
             <span>ยืมด่วน</span>
           </Link>
