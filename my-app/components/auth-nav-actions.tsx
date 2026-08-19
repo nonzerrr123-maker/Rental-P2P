@@ -129,7 +129,7 @@ export default function AuthNavActions() {
             id="account-menu"
             role="menu"
             aria-label="เมนูบัญชี"
-            className="absolute right-0 top-[calc(100%+0.65rem)] z-[70] w-[min(20rem,calc(100vw-2rem))] overflow-hidden rounded-[22px] border border-[var(--line)] bg-white p-2 shadow-[0_24px_64px_rgba(18,18,18,0.16)]"
+            className="absolute right-0 top-[calc(100%+0.65rem)] z-[70] max-h-[calc(100dvh-5.5rem)] w-[min(20rem,calc(100vw-2rem))] overflow-y-auto overscroll-contain rounded-[22px] border border-[var(--line)] bg-white p-2 shadow-[0_24px_64px_rgba(18,18,18,0.16)]"
           >
             <div className="flex items-center gap-3 px-3 py-3">
               <UserAvatar userId={user.id} displayName={user.displayName} version={avatarVersion} className="h-11 w-11 rounded-2xl text-sm" />
