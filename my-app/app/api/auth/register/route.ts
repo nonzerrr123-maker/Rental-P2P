@@ -48,15 +48,26 @@ export async function POST(request: Request) {
       [email, passwordHash, displayName],
     );
     const user = result.rows[0];
-
-    const emailVerification = await sendVerificationForUser({
-      userId: user.id,
-      email: user.email,
-      displayName: user.display_name,
-      baseUrl: resolveEmailPublicBaseUrl(request),
-      enforceCooldown: false,
-    });
     const verificationRequired = isEmailVerificationRequired();
+
+    let emailVerificationSent = false;
+    try {
+      const emailVerification = await sendVerificationForUser({
+        userId: user.id,
+        email: user.email,
+        displayName: user.display_name,
+        baseUrl: resolveEmailPublicBaseUrl(request),
+        enforceCooldown: false,
+      });
+      emailVerificationSent = emailVerification.sent;
+    } catch (error) {
+      // Registration is authoritative once the user row is persisted. Email delivery
+      // and its supporting migration are deliberately best-effort during rollout.
+      console.error("Registration verification email could not be started", {
+        name: error instanceof Error ? error.name : "UnknownError",
+        code: typeof error === "object" && error !== null && "code" in error ? error.code : undefined,
+      });
+    }
 
     return NextResponse.json(
       {
@@ -70,7 +81,7 @@ export async function POST(request: Request) {
         },
         emailVerification: {
           required: verificationRequired,
-          sent: emailVerification.sent,
+          sent: emailVerificationSent,
         },
         redirect: verificationRequired ? `/verify-email?email=${encodeURIComponent(user.email)}` : "/login",
       },
