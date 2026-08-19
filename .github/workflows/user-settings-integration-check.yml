@@ -6,7 +6,7 @@ on:
       - "my-app/app/settings/**"
       - "my-app/app/profile/page.tsx"
       - "my-app/app/users/**"
-      - "my-app/app/rent/[id]/page.tsx"
+      - "my-app/app/rent/**"
       - "my-app/app/api/settings/**"
       - "my-app/lib/forms/settings.ts"
       - "my-app/docs/migrations/**"
@@ -84,6 +84,10 @@ jobs:
           curl --fail --silent -c /tmp/session-a.txt -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"settings@example.com","password":"settings-password-123"}' > /tmp/login-a.json
           curl --fail --silent -c /tmp/session-b.txt -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"settings@example.com","password":"settings-password-123"}' > /tmp/login-b.json
           psql "$DATABASE_URL" -Atc "SELECT count(*) FROM user_sessions s JOIN users u ON u.id=s.user_id WHERE u.email='settings@example.com' AND s.revoked_at IS NULL" | grep '^2$'
+      - name: List active sessions and identify current
+        run: |
+          curl --fail --silent -b /tmp/session-b.txt http://127.0.0.1:3000/api/settings/security/sessions > /tmp/sessions-before.json
+          node -e 'const d=require("/tmp/sessions-before.json"); if(!d.ok || d.sessions.length!==2 || d.sessions.filter(x=>x.current).length!==1) process.exit(1)'
       - name: Update profile authoritatively
         run: |
           curl --fail --silent -b /tmp/session-b.txt -X PATCH http://127.0.0.1:3000/api/settings/profile -H 'Content-Type: application/json' --data '{"displayName":"Settings Updated","phone":"0812345678","bio":"คนชลบุรี ชอบอุปกรณ์แคมป์ปิ้งและดูแลของทุกชิ้นเอง"}' > /tmp/profile-updated.json
@@ -105,8 +109,26 @@ jobs:
           code_a=$(curl --silent --output /tmp/me-a.json --write-out "%{http_code}" -b /tmp/session-a.txt http://127.0.0.1:3000/api/auth/me)
           test "$code_a" = "401"
           curl --fail --silent -b /tmp/session-b.txt http://127.0.0.1:3000/api/auth/me > /tmp/me-b.json
+          curl --fail --silent -b /tmp/session-b.txt http://127.0.0.1:3000/api/settings/security/sessions > /tmp/sessions-after-password.json
+          node -e 'const d=require("/tmp/sessions-after-password.json"); if(d.sessions.length!==1 || !d.sessions[0].current) process.exit(1)'
           code_old=$(curl --silent --output /tmp/old-password.json --write-out "%{http_code}" -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"settings@example.com","password":"settings-password-123"}')
           test "$code_old" = "401"
+      - name: Revoke one other session without logging out current
+        run: |
+          curl --fail --silent -c /tmp/session-c.txt -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data '{"email":"settings@example.com","password":"new-settings-password-456"}' > /tmp/login-c.json
+          curl --fail --silent -b /tmp/session-b.txt http://127.0.0.1:3000/api/settings/security/sessions > /tmp/sessions-with-c.json
+          node - <<'NODE'
+          const fs=require('fs'); const d=require('/tmp/sessions-with-c.json');
+          if(d.sessions.length!==2 || d.sessions.filter(x=>x.current).length!==1) process.exit(1);
+          const other=d.sessions.find(x=>!x.current); if(!other) process.exit(1);
+          fs.writeFileSync('/tmp/other-session-id',other.id);
+          NODE
+          other_id=$(cat /tmp/other-session-id)
+          curl --fail --silent -b /tmp/session-b.txt -X DELETE http://127.0.0.1:3000/api/settings/security/sessions -H 'Content-Type: application/json' --data "{\"sessionId\":\"$other_id\"}" > /tmp/revoke-one.json
+          node -e 'const d=require("/tmp/revoke-one.json"); if(!d.ok || d.revokedSessions!==1 || d.currentSessionRevoked) process.exit(1)'
+          code_c=$(curl --silent --output /tmp/me-c.json --write-out "%{http_code}" -b /tmp/session-c.txt http://127.0.0.1:3000/api/auth/me)
+          test "$code_c" = "401"
+          curl --fail --silent -b /tmp/session-b.txt http://127.0.0.1:3000/api/auth/me >/dev/null
       - name: Render account and public profile surfaces
         run: |
           user_id=$(cat /tmp/settings-user-id)
@@ -128,7 +150,7 @@ jobs:
       - name: Revoke all sessions including current
         run: |
           curl --fail --silent -b /tmp/session-b.txt -X DELETE http://127.0.0.1:3000/api/settings/security/sessions > /tmp/revoke-all.json
-          node -e 'const d=require("/tmp/revoke-all.json"); if(!d.ok || d.revokedSessions<1) process.exit(1)'
+          node -e 'const d=require("/tmp/revoke-all.json"); if(!d.ok || d.revokedSessions<1 || !d.currentSessionRevoked) process.exit(1)'
           code=$(curl --silent --output /tmp/me-after-revoke.json --write-out "%{http_code}" -b /tmp/session-b.txt http://127.0.0.1:3000/api/auth/me)
           test "$code" = "401"
           psql "$DATABASE_URL" -Atc "SELECT count(*) FROM user_sessions s JOIN users u ON u.id=s.user_id WHERE u.email='settings@example.com' AND s.revoked_at IS NULL" | grep '^0$'
