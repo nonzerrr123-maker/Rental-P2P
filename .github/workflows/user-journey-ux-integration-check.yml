@@ -49,10 +49,10 @@ jobs:
           cache-dependency-path: my-app/package-lock.json
       - name: Install dependencies
         run: npm ci
-      - name: Apply PostgreSQL schema and migrations
+      - name: Apply PostgreSQL schema and tracked migrations
         run: |
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/migrations/20260818_task18_user_avatar.sql
+          npm run db:migrate
       - name: Seed public rental fixture
         run: |
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'

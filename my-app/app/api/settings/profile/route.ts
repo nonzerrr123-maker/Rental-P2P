@@ -10,6 +10,7 @@ export const dynamic = "force-dynamic";
 type ProfileRow = QueryResultRow & {
   display_name: string;
   phone: string | null;
+  bio: string | null;
 };
 
 export async function PATCH(request: Request) {
@@ -24,13 +25,15 @@ export async function PATCH(request: Request) {
     }
 
     const phone = parsed.data.phone === "" ? null : parsed.data.phone;
+    const bio = parsed.data.bio?.trim() ? parsed.data.bio : null;
     const result = await query<ProfileRow>(
       `UPDATE users
        SET display_name = $2,
-           phone = $3
+           phone = $3,
+           bio = $4
        WHERE id = $1
-       RETURNING display_name, phone`,
-      [user.id, parsed.data.displayName, phone],
+       RETURNING display_name, phone, bio`,
+      [user.id, parsed.data.displayName, phone, bio],
     );
 
     return NextResponse.json({
@@ -38,6 +41,7 @@ export async function PATCH(request: Request) {
       profile: {
         displayName: result.rows[0].display_name,
         phone: result.rows[0].phone,
+        bio: result.rows[0].bio,
       },
     });
   } catch (error) {

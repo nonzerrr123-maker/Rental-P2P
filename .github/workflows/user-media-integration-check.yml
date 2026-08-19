@@ -10,7 +10,7 @@ on:
       - "my-app/app/profile/**"
       - "my-app/components/user-avatar.tsx"
       - "my-app/components/auth-nav-actions.tsx"
-      - "my-app/docs/migrations/20260818_task18_user_avatar.sql"
+      - "my-app/docs/migrations/**"
       - ".github/workflows/user-media-integration-check.yml"
 
 jobs:
@@ -49,10 +49,10 @@ jobs:
           cache: npm
           cache-dependency-path: my-app/package-lock.json
       - run: npm ci
-      - name: Apply schema and avatar migration
+      - name: Apply schema and tracked migrations
         run: |
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/migrations/20260818_task18_user_avatar.sql
+          npm run db:migrate
       - name: Start S3-compatible MinIO
         working-directory: .
         run: |

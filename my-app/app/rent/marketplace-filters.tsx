@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { BoltIcon } from "@/components/ui/icons";
 
 export type MarketplaceFilterValues = {
   q: string;
@@ -72,7 +73,7 @@ export function MarketplaceFilters({
   };
 
   return (
-    <section className="rounded-3xl border border-neutral-200 bg-white p-5 shadow-sm md:p-6">
+    <section className="rounded-3xl border border-neutral-200 bg-white p-4 shadow-sm sm:p-5 md:p-6">
       <form action="/rent" method="get" className="space-y-5">
         {initial.latitude !== null && initial.longitude !== null && (
           <>
@@ -82,8 +83,8 @@ export function MarketplaceFilters({
           </>
         )}
 
-        <div className="grid gap-3 md:grid-cols-[minmax(0,2fr)_1fr_1fr]">
-          <label className="text-sm font-bold">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,2fr)_1fr_1fr]">
+          <label className="text-sm font-bold sm:col-span-2 lg:col-span-1">
             ค้นหา
             <input
               name="q"
@@ -95,22 +96,14 @@ export function MarketplaceFilters({
           </label>
           <label className="text-sm font-bold">
             หมวดหมู่
-            <select
-              name="category"
-              defaultValue={initial.category}
-              className="mt-2 w-full rounded-xl border border-neutral-300 bg-white px-4 py-3 font-normal"
-            >
+            <select name="category" defaultValue={initial.category} className="mt-2 w-full rounded-xl border border-neutral-300 bg-white px-4 py-3 font-normal">
               <option value="">ทั้งหมด</option>
               {categories.map((category) => <option key={category} value={category}>{category}</option>)}
             </select>
           </label>
           <label className="text-sm font-bold">
             จังหวัด
-            <select
-              name="province"
-              defaultValue={initial.province}
-              className="mt-2 w-full rounded-xl border border-neutral-300 bg-white px-4 py-3 font-normal"
-            >
+            <select name="province" defaultValue={initial.province} className="mt-2 w-full rounded-xl border border-neutral-300 bg-white px-4 py-3 font-normal">
               <option value="">ทุกจังหวัด</option>
               {provinces.map((province) => <option key={province} value={province}>{province}</option>)}
             </select>
@@ -145,7 +138,7 @@ export function MarketplaceFilters({
               <option value="DAY">รายวัน</option>
             </select>
           </label>
-          <label className="text-sm font-bold">
+          <label className="text-sm font-bold sm:col-span-2 lg:col-span-1">
             เรียงตาม
             <select name="sort" defaultValue={initial.sort} className="mt-2 w-full rounded-xl border bg-white px-3 py-2.5 font-normal">
               <option value="newest">ใหม่ล่าสุด</option>
@@ -165,42 +158,43 @@ export function MarketplaceFilters({
             ราคาสูงสุด
             <input name="maxPrice" type="number" min="0" step="1" defaultValue={initial.maxPrice ?? ""} className="mt-2 w-full rounded-xl border px-3 py-2.5 font-normal" />
           </label>
-          <label className="flex items-end gap-2 rounded-xl border px-4 py-2.5 text-sm font-bold">
-            <input name="urgent" type="checkbox" value="1" defaultChecked={initial.urgent} className="h-4 w-4 accent-[#c9a227]" />
-            ⚡ เฉพาะยืมด่วนที่ว่างตอนนี้
+          <label className="flex min-h-12 items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-bold sm:col-span-2 lg:col-span-1 lg:self-end">
+            <input name="urgent" type="checkbox" value="1" defaultChecked={initial.urgent} className="h-4 w-4 shrink-0 accent-[#c9a227]" />
+            <BoltIcon size={16} className="shrink-0 text-[var(--gold-strong)]" />
+            <span>เฉพาะยืมด่วนที่ว่างตอนนี้</span>
           </label>
         </div>
 
-        <div className="flex flex-col gap-3 border-t pt-5 lg:flex-row lg:items-center lg:justify-between">
-          <div>
+        <div className="flex flex-col gap-4 border-t pt-5 lg:flex-row lg:items-end lg:justify-between">
+          <div className="min-w-0 flex-1">
             <p className="text-sm font-black">ค้นหาของใกล้คุณ</p>
-            <div className="mt-2 flex flex-wrap gap-2">
+            <div className="hide-scrollbar mt-2 flex gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-visible">
               {[5, 10, 20, 50].map((radius) => (
                 <button
                   key={radius}
                   type="button"
                   disabled={locating}
                   onClick={() => requestCurrentLocation(radius)}
-                  className={`rounded-full border px-4 py-2 text-xs font-bold transition hover:border-[#c9a227] disabled:opacity-50 ${initial.radiusKm === radius ? "border-neutral-900 bg-neutral-900 text-white" : "bg-white"}`}
+                  className={`shrink-0 whitespace-nowrap rounded-full border px-4 py-2 text-xs font-bold transition hover:border-[#c9a227] disabled:opacity-50 ${initial.radiusKm === radius ? "border-neutral-900 bg-neutral-900 text-white" : "bg-white"}`}
                 >
                   {locating ? "กำลังหาตำแหน่ง..." : `ภายใน ${radius} กม.`}
                 </button>
               ))}
               {initial.latitude !== null && (
-                <button type="button" onClick={clearCurrentLocation} className="rounded-full border px-4 py-2 text-xs font-bold text-neutral-500">
+                <button type="button" onClick={clearCurrentLocation} className="shrink-0 whitespace-nowrap rounded-full border px-4 py-2 text-xs font-bold text-neutral-500">
                   ยกเลิกตำแหน่ง
                 </button>
               )}
-              <Link href="/location" className="rounded-full border border-[#c9a227] px-4 py-2 text-xs font-bold text-[#806515]">หน้า Nearby เต็ม</Link>
+              <Link href="/location" className="shrink-0 whitespace-nowrap rounded-full border border-[#c9a227] px-4 py-2 text-xs font-bold text-[#806515]">หน้า Nearby เต็ม</Link>
             </div>
             {locationError && <p className="mt-2 text-xs font-semibold text-red-600">{locationError}</p>}
             {initial.latitude !== null && (
-              <p className="mt-2 text-xs text-neutral-500">พิกัดผู้ค้นหาถูกใช้เพื่อคำนวณระยะทาง ส่วนพิกัดของเจ้าของรายการไม่ถูกส่งออกใน Public Marketplace API</p>
+              <p className="mt-2 max-w-3xl text-xs leading-5 text-neutral-500">พิกัดผู้ค้นหาถูกใช้เพื่อคำนวณระยะทาง ส่วนพิกัดของเจ้าของรายการไม่ถูกส่งออกใน Public Marketplace API</p>
             )}
           </div>
-          <div className="flex gap-2">
-            <Link href="/rent" className="rounded-xl border px-5 py-3 text-sm font-bold">ล้างตัวกรอง</Link>
-            <button type="submit" className="rounded-xl bg-neutral-900 px-6 py-3 text-sm font-black text-white hover:bg-neutral-800">ค้นหา</button>
+          <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end lg:shrink-0">
+            <Link href="/rent" className="inline-flex min-h-11 items-center justify-center whitespace-nowrap rounded-xl border px-4 text-sm font-bold sm:px-5">ล้างตัวกรอง</Link>
+            <button type="submit" className="min-h-11 whitespace-nowrap rounded-xl bg-neutral-900 px-5 text-sm font-black text-white hover:bg-neutral-800 sm:px-6">ค้นหา</button>
           </div>
         </div>
       </form>
