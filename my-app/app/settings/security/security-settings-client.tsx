@@ -121,19 +121,19 @@ export default function SecuritySettingsClient() {
     <div className="space-y-8">
       <section>
         <div className="flex items-start justify-between gap-3">
-          <div><h2 className="text-lg font-black">Session ที่กำลังใช้งาน</h2><p className="mt-1 text-sm leading-6 text-[var(--muted)]">ตรวจว่ามี session อื่นค้างอยู่หรือไม่ และออกจากระบบเฉพาะ session ที่ไม่ต้องการได้</p></div>
-          <button type="button" onClick={() => void loadSessions()} disabled={sessionsLoading} className="shrink-0 text-xs font-black text-[var(--gold-strong)] disabled:opacity-50">รีเฟรช</button>
+          <div className="min-w-0"><h2 className="text-lg font-black">Session ที่กำลังใช้งาน</h2><p className="mt-1 text-sm leading-6 text-[var(--muted)]">ตรวจว่ามี session อื่นค้างอยู่หรือไม่ และออกจากระบบเฉพาะ session ที่ไม่ต้องการได้</p></div>
+          <button type="button" onClick={() => void loadSessions()} disabled={sessionsLoading} className="shrink-0 whitespace-nowrap text-xs font-black text-[var(--gold-strong)] disabled:opacity-50">รีเฟรช</button>
         </div>
         <div className="mt-4 space-y-2">
           {sessionsLoading && sessions.length === 0 && <div className="rounded-xl bg-[var(--surface-2)] p-4 text-sm text-[var(--muted)]">กำลังโหลด session...</div>}
           {sessions.map((session) => (
-            <div key={session.id} className={`flex flex-col gap-3 rounded-2xl border p-4 sm:flex-row sm:items-center sm:justify-between ${session.current ? "border-[var(--gold-line)] bg-[var(--gold-soft)]" : "border-[var(--line)] bg-white"}`}>
-              <div>
+            <div key={session.id} className={`flex min-w-0 flex-col gap-3 rounded-2xl border p-4 sm:flex-row sm:items-center sm:justify-between ${session.current ? "border-[var(--gold-line)] bg-[var(--gold-soft)]" : "border-[var(--line)] bg-white"}`}>
+              <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2"><p className="text-sm font-black">{session.current ? "อุปกรณ์นี้" : "Session อื่น"}</p>{session.current && <span className="rounded-full bg-white px-2 py-1 text-[10px] font-black text-[var(--gold-strong)]">CURRENT</span>}</div>
-                <p className="mt-1 text-xs text-[var(--muted)]">ใช้งานล่าสุด {dateTime.format(new Date(session.lastSeenAt ?? session.createdAt))}</p>
-                <p className="mt-1 text-[10px] text-[var(--muted)]">สร้างเมื่อ {dateTime.format(new Date(session.createdAt))} · หมดอายุ {dateTime.format(new Date(session.expiresAt))}</p>
+                <p className="mt-1 break-words text-xs leading-5 text-[var(--muted)]">ใช้งานล่าสุด {dateTime.format(new Date(session.lastSeenAt ?? session.createdAt))}</p>
+                <p className="mt-1 break-words text-[10px] leading-5 text-[var(--muted)]">สร้างเมื่อ {dateTime.format(new Date(session.createdAt))} · หมดอายุ {dateTime.format(new Date(session.expiresAt))}</p>
               </div>
-              {!session.current && <Button type="button" variant="outline" size="sm" disabled={revokingSessionId === session.id} onClick={() => void revokeSession(session.id)}>{revokingSessionId === session.id ? "กำลังออก..." : "ออกจาก session นี้"}</Button>}
+              {!session.current && <Button type="button" variant="outline" size="sm" className="w-full shrink-0 sm:w-auto" disabled={revokingSessionId === session.id} onClick={() => void revokeSession(session.id)}>{revokingSessionId === session.id ? "กำลังออก..." : "ออกจาก session นี้"}</Button>}
             </div>
           ))}
           {!sessionsLoading && sessions.length === 0 && <div className="rounded-xl bg-[var(--surface-2)] p-4 text-sm text-[var(--muted)]">ไม่พบ session ที่ยังใช้งานได้</div>}
@@ -161,18 +161,20 @@ export default function SecuritySettingsClient() {
           <Input id="confirm-password" type="password" autoComplete="new-password" aria-invalid={Boolean(errors.confirmPassword)} {...register("confirmPassword")} />
           <FormMessage>{errors.confirmPassword?.message}</FormMessage>
         </FormField>
-        {message && <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-700">{message}</p>}
-        {success && <p role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-bold text-emerald-800">{success}</p>}
-        <Button type="submit" size="lg" disabled={isSubmitting}>{isSubmitting ? "กำลังเปลี่ยน..." : "เปลี่ยนรหัสผ่าน"}</Button>
+        {message && <p role="alert" className="break-words rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-700">{message}</p>}
+        {success && <p role="status" className="break-words rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-bold text-emerald-800">{success}</p>}
+        <Button type="submit" size="lg" className="w-full sm:w-auto" disabled={isSubmitting}>{isSubmitting ? "กำลังเปลี่ยน..." : "เปลี่ยนรหัสผ่าน"}</Button>
       </form>
 
       <div className="border-t border-[var(--line)] pt-7">
         <h2 className="text-lg font-black">ออกจากระบบทุกอุปกรณ์</h2>
         <p className="mt-1 text-sm leading-6 text-[var(--muted)]">ใช้เมื่อทำอุปกรณ์หายหรือสงสัยว่ามีคนอื่นเข้าบัญชี การกดครั้งนี้จะรวมอุปกรณ์ปัจจุบันด้วย</p>
-        <Button variant="destructive" className="mt-4" onClick={revokeAllSessions} disabled={revoking}>
-          {revoking ? "กำลังออกจากระบบ..." : confirmRevoke ? "ยืนยันออกจากระบบทุกอุปกรณ์" : "ออกจากระบบทุกอุปกรณ์"}
-        </Button>
-        {confirmRevoke && !revoking && <button type="button" className="ml-3 text-xs font-black text-[var(--muted)]" onClick={() => setConfirmRevoke(false)}>ยกเลิก</button>}
+        <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center">
+          <Button variant="destructive" className="w-full sm:w-auto" onClick={revokeAllSessions} disabled={revoking}>
+            {revoking ? "กำลังออกจากระบบ..." : confirmRevoke ? "ยืนยันออกจากระบบทุกอุปกรณ์" : "ออกจากระบบทุกอุปกรณ์"}
+          </Button>
+          {confirmRevoke && !revoking && <button type="button" className="min-h-10 w-full rounded-xl px-3 text-xs font-black text-[var(--muted)] hover:bg-[var(--surface-2)] sm:w-auto" onClick={() => setConfirmRevoke(false)}>ยกเลิก</button>}
+        </div>
       </div>
     </div>
   );
