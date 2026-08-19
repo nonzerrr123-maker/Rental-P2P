@@ -2,10 +2,23 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ActivityNavLinks from "@/components/activity-nav-links";
 import UserAvatar from "@/components/user-avatar";
-import { LayoutDashboardIcon, LogOutIcon, PlusIcon, ShieldCheckIcon, UserIcon } from "@/components/ui/icons";
+import {
+  BellIcon,
+  BoltIcon,
+  CompassIcon,
+  LayoutDashboardIcon,
+  LogOutIcon,
+  MapPinIcon,
+  MessageIcon,
+  PlusIcon,
+  ShieldCheckIcon,
+  SlidersIcon,
+  UserIcon,
+  UsersIcon,
+} from "@/components/ui/icons";
 
 type NavUser = {
   id: string;
@@ -19,6 +32,8 @@ export default function AuthNavActions() {
   const [user, setUser] = useState<NavUser | null>(null);
   const [resolved, setResolved] = useState(false);
   const [avatarVersion, setAvatarVersion] = useState(0);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -37,7 +52,26 @@ export default function AuthNavActions() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!menuOpen) return;
+
+    const onPointerDown = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    };
+
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [menuOpen]);
+
   const logout = async () => {
+    setMenuOpen(false);
     await fetch("/api/auth/logout", { method: "POST" });
     setUser(null);
     router.push("/");
@@ -59,6 +93,8 @@ export default function AuthNavActions() {
 
   const isAdmin = user.role === "ADMIN" || user.role === "SUPERADMIN";
   const canRent = isAdmin || user.verificationStatus === "VERIFIED";
+  const closeMenu = () => setMenuOpen(false);
+  const menuLinkClass = "flex min-h-11 items-center gap-3 rounded-xl px-3 py-2 text-sm font-extrabold text-[var(--muted-strong)] transition hover:bg-[var(--surface-2)] hover:text-[var(--ink)]";
 
   return (
     <div className="flex shrink-0 items-center gap-1.5 lg:gap-2">
@@ -73,15 +109,66 @@ export default function AuthNavActions() {
         {canRent ? <PlusIcon size={17} /> : <ShieldCheckIcon size={17} />}
         <span>{canRent ? "ลงของ" : "ยืนยันตัวตน"}</span>
       </Link>
-      <Link href="/dashboard" className="group inline-flex h-10 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border border-[var(--line)] bg-white p-1.5 text-sm font-bold hover:border-[var(--gold-line)] lg:pl-1.5 lg:pr-2.5">
-        <UserAvatar userId={user.id} displayName={user.displayName} version={avatarVersion} className="h-7 w-7 rounded-lg text-[10px]" />
-        <span className="hidden max-w-24 truncate lg:inline xl:max-w-28">{user.displayName}</span>
-        <LayoutDashboardIcon size={15} className="hidden text-[var(--muted)] 2xl:block" />
-      </Link>
-      <button type="button" onClick={logout} className="hidden h-10 w-10 shrink-0 place-items-center rounded-xl text-[var(--muted)] hover:bg-[var(--surface-2)] hover:text-[var(--ink)] lg:grid" aria-label="ออกจากระบบ">
-        <LogOutIcon size={18} />
-      </button>
-      <Link href="/dashboard" className="sr-only"><UserIcon />บัญชีของฉัน</Link>
+
+      <div ref={menuRef} className="relative">
+        <button
+          type="button"
+          onClick={() => setMenuOpen((current) => !current)}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          aria-controls="account-menu"
+          className={`group inline-flex h-10 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border bg-white p-1.5 text-sm font-bold transition lg:pl-1.5 lg:pr-2.5 ${menuOpen ? "border-[var(--gold-line)] shadow-[var(--shadow-xs)]" : "border-[var(--line)] hover:border-[var(--gold-line)]"}`}
+        >
+          <UserAvatar userId={user.id} displayName={user.displayName} version={avatarVersion} className="h-7 w-7 rounded-lg text-[10px]" />
+          <span className="hidden max-w-24 truncate lg:inline xl:max-w-28">{user.displayName}</span>
+          <span className="sr-only">เปิดเมนูบัญชี</span>
+        </button>
+
+        {menuOpen && (
+          <div
+            id="account-menu"
+            role="menu"
+            aria-label="เมนูบัญชี"
+            className="absolute right-0 top-[calc(100%+0.65rem)] z-[70] max-h-[calc(100dvh-5.5rem)] w-[min(20rem,calc(100vw-2rem))] overflow-y-auto overscroll-contain rounded-[22px] border border-[var(--line)] bg-white p-2 shadow-[0_24px_64px_rgba(18,18,18,0.16)]"
+          >
+            <div className="flex items-center gap-3 px-3 py-3">
+              <UserAvatar userId={user.id} displayName={user.displayName} version={avatarVersion} className="h-11 w-11 rounded-2xl text-sm" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-black text-[var(--ink)]">{user.displayName}</p>
+                <p className="mt-0.5 text-[11px] font-bold text-[var(--muted)]">
+                  {user.verificationStatus === "VERIFIED" ? "ยืนยันตัวตนแล้ว" : "บัญชียังยืนยันตัวตนไม่สมบูรณ์"}
+                </p>
+              </div>
+            </div>
+
+            <div className="border-t border-[var(--line)] pt-2">
+              <Link href="/profile" onClick={closeMenu} role="menuitem" className={menuLinkClass}><UserIcon size={18}/><span>โปรไฟล์ของฉัน</span></Link>
+              <Link href="/dashboard" onClick={closeMenu} role="menuitem" className={menuLinkClass}><LayoutDashboardIcon size={18}/><span>Dashboard</span></Link>
+              <Link href="/settings" onClick={closeMenu} role="menuitem" className={menuLinkClass}><SlidersIcon size={18}/><span>ตั้งค่าบัญชี</span></Link>
+              <Link href="/chat" onClick={closeMenu} role="menuitem" className={menuLinkClass}><MessageIcon size={18}/><span>ข้อความ</span></Link>
+              <Link href="/notifications" onClick={closeMenu} role="menuitem" className={menuLinkClass}><BellIcon size={18}/><span>การแจ้งเตือน</span></Link>
+            </div>
+
+            <div className="mt-2 border-t border-[var(--line)] pt-2 md:hidden">
+              <p className="px-3 pb-1 pt-1 text-[10px] font-black uppercase tracking-[0.16em] text-[var(--muted)]">สำรวจ</p>
+              <Link href="/rent" onClick={closeMenu} role="menuitem" className={menuLinkClass}><CompassIcon size={18}/><span>ค้นหาของ</span></Link>
+              <Link href="/location" onClick={closeMenu} role="menuitem" className={menuLinkClass}><MapPinIcon size={18}/><span>ของใกล้ฉัน</span></Link>
+              <Link href="/rent?urgent=true" onClick={closeMenu} role="menuitem" className={menuLinkClass}><BoltIcon size={18}/><span>ยืมด่วน</span></Link>
+              <Link href="/community" onClick={closeMenu} role="menuitem" className={menuLinkClass}><UsersIcon size={18}/><span>คอมมูหาของ</span></Link>
+            </div>
+
+            <div className="mt-2 border-t border-[var(--line)] pt-2">
+              <Link href={canRent ? "/lend" : "/verification"} onClick={closeMenu} role="menuitem" className={`${menuLinkClass} text-[var(--gold-strong)]`}>
+                {canRent ? <PlusIcon size={18}/> : <ShieldCheckIcon size={18}/>}<span>{canRent ? "ลงของให้ยืม" : "ยืนยันตัวตน"}</span>
+              </Link>
+              {isAdmin && <Link href="/admin" onClick={closeMenu} role="menuitem" className={menuLinkClass}><ShieldCheckIcon size={18}/><span>Admin</span></Link>}
+              <button type="button" onClick={() => void logout()} role="menuitem" className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm font-extrabold text-red-600 transition hover:bg-red-50">
+                <LogOutIcon size={18}/><span>ออกจากระบบ</span>
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

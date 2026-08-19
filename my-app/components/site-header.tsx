@@ -7,9 +7,9 @@ import { BrandMark } from "@/components/ui/primitives";
 import { BoltIcon, CompassIcon, MapPinIcon, UsersIcon } from "@/components/ui/icons";
 
 const links = [
-  { href: "/rent", label: "ค้นหาของ", compactLabel: "ค้นหา", icon: CompassIcon },
-  { href: "/location", label: "ใกล้ฉัน", compactLabel: "ใกล้ฉัน", icon: MapPinIcon },
-  { href: "/community", label: "คอมมูหาของ", compactLabel: "คอมมู", icon: UsersIcon },
+  { href: "/rent", label: "ค้นหาของ", icon: CompassIcon },
+  { href: "/location", label: "ใกล้ฉัน", icon: MapPinIcon },
+  { href: "/community", label: "คอมมูหาของ", icon: UsersIcon },
 ];
 
 function isActive(pathname: string, href: string) {
@@ -70,29 +70,6 @@ export default function SiteHeader() {
           <AuthNavActions />
         </div>
       </div>
-
-      <nav className="hide-scrollbar flex h-12 items-center gap-1 overflow-x-auto border-t border-[var(--line)] px-3 md:hidden" aria-label="เมนูหลักบนมือถือ">
-        <div className="mx-auto flex min-w-max items-center gap-1">
-          {links.map(({ href, compactLabel, label, icon: Icon }) => {
-            const active = isActive(pathname, href);
-            return (
-              <Link
-                key={href}
-                href={href}
-                aria-label={label}
-                className={`inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl px-3 text-xs font-extrabold transition ${active ? "bg-white text-[var(--ink)] shadow-[var(--shadow-xs)] ring-1 ring-[var(--line)]" : "text-[var(--muted-strong)]"}`}
-              >
-                <Icon size={15} />
-                <span>{compactLabel}</span>
-              </Link>
-            );
-          })}
-          <Link href="/rent?urgent=true" className="inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl px-3 text-xs font-extrabold text-[var(--gold-strong)] transition">
-            <BoltIcon size={15} />
-            <span>ยืมด่วน</span>
-          </Link>
-        </div>
-      </nav>
     </header>
   );
 }
