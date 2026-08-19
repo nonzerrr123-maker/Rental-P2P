@@ -47,7 +47,25 @@ export default function SecuritySettingsClient() {
     }
   };
 
-  useEffect(() => { void loadSessions(); }, []);
+  useEffect(() => {
+    let active = true;
+    fetch("/api/settings/security/sessions", { cache: "no-store" })
+      .then(async (response) => {
+        const result = await response.json();
+        if (!response.ok || !result.ok) throw new Error(result.message ?? "โหลด session ไม่สำเร็จ");
+        return result.sessions as SessionSummary[] | undefined;
+      })
+      .then((items) => {
+        if (active) setSessions(items ?? []);
+      })
+      .catch((error: unknown) => {
+        if (active) setMessage(error instanceof Error ? error.message : "โหลด session ไม่สำเร็จ");
+      })
+      .finally(() => {
+        if (active) setSessionsLoading(false);
+      });
+    return () => { active = false; };
+  }, []);
 
   const changePassword = handleSubmit(async (values) => {
     setMessage("");
@@ -131,7 +149,7 @@ export default function SecuritySettingsClient() {
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2"><p className="text-sm font-black">{session.current ? "อุปกรณ์นี้" : "Session อื่น"}</p>{session.current && <span className="rounded-full bg-white px-2 py-1 text-[10px] font-black text-[var(--gold-strong)]">CURRENT</span>}</div>
                 <p className="mt-1 break-words text-xs leading-5 text-[var(--muted)]">ใช้งานล่าสุด {dateTime.format(new Date(session.lastSeenAt ?? session.createdAt))}</p>
-                <p className="mt-1 break-words text-[10px] leading-5 text-[var(--muted)]">สร้างเมื่อ {dateTime.format(new Date(session.createdAt))} · หมดอายุ {dateTime.format(new Date(session.expiresAt))}</p>
+                <p className="mt-1 break-words text-[10px] leading-4 text-[var(--muted)]">สร้างเมื่อ {dateTime.format(new Date(session.createdAt))} · หมดอายุ {dateTime.format(new Date(session.expiresAt))}</p>
               </div>
               {!session.current && <Button type="button" variant="outline" size="sm" className="w-full shrink-0 sm:w-auto" disabled={revokingSessionId === session.id} onClick={() => void revokeSession(session.id)}>{revokingSessionId === session.id ? "กำลังออก..." : "ออกจาก session นี้"}</Button>}
             </div>
@@ -161,8 +179,8 @@ export default function SecuritySettingsClient() {
           <Input id="confirm-password" type="password" autoComplete="new-password" aria-invalid={Boolean(errors.confirmPassword)} {...register("confirmPassword")} />
           <FormMessage>{errors.confirmPassword?.message}</FormMessage>
         </FormField>
-        {message && <p role="alert" className="break-words rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-700">{message}</p>}
-        {success && <p role="status" className="break-words rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-bold text-emerald-800">{success}</p>}
+        {message && <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-700">{message}</p>}
+        {success && <p role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-bold text-emerald-800">{success}</p>}
         <Button type="submit" size="lg" className="w-full sm:w-auto" disabled={isSubmitting}>{isSubmitting ? "กำลังเปลี่ยน..." : "เปลี่ยนรหัสผ่าน"}</Button>
       </form>
 
@@ -173,7 +191,7 @@ export default function SecuritySettingsClient() {
           <Button variant="destructive" className="w-full sm:w-auto" onClick={revokeAllSessions} disabled={revoking}>
             {revoking ? "กำลังออกจากระบบ..." : confirmRevoke ? "ยืนยันออกจากระบบทุกอุปกรณ์" : "ออกจากระบบทุกอุปกรณ์"}
           </Button>
-          {confirmRevoke && !revoking && <button type="button" className="min-h-10 w-full rounded-xl px-3 text-xs font-black text-[var(--muted)] hover:bg-[var(--surface-2)] sm:w-auto" onClick={() => setConfirmRevoke(false)}>ยกเลิก</button>}
+          {confirmRevoke && !revoking && <button type="button" className="min-h-10 rounded-xl px-3 text-xs font-black text-[var(--muted)]" onClick={() => setConfirmRevoke(false)}>ยกเลิก</button>}
         </div>
       </div>
     </div>
