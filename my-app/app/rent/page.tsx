@@ -70,6 +70,7 @@ export default async function RentPage({ searchParams }: { searchParams: SearchP
     searchPublicRentalItems(filters),
     listMarketplaceFacets(),
   ]);
+  const locationSearchActive = filters.latitude !== null && filters.longitude !== null && filters.radiusKm !== null;
 
   return (
     <main className="min-h-screen bg-[var(--canvas)] text-[var(--ink)]">
@@ -81,11 +82,11 @@ export default async function RentPage({ searchParams }: { searchParams: SearchP
           <div className="mt-2 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div className="max-w-3xl">
               <h1 className="text-3xl font-black tracking-[-0.045em] sm:text-4xl lg:text-5xl">ของที่อยากใช้ อาจอยู่ใกล้กว่าที่คิด</h1>
-              <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--muted)] sm:text-base">ค้นหารายการจริง เลือกราคา ช่วงเวลา ยืมด่วน หรือเรียงจากของที่อยู่ใกล้คุณ</p>
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--muted)] sm:text-base">ค้นหาแบบง่ายก่อน แล้วค่อยเปิดตัวกรองเพิ่มเติมเมื่ออยากเจาะจงราคา สภาพ ยืมด่วน หรือตำแหน่งใกล้ตัว</p>
             </div>
             {filters.radiusKm !== null && (
               <div className="inline-flex self-start items-center gap-2 rounded-full border border-[var(--gold-line)] bg-[var(--gold-soft)] px-3.5 py-2 text-xs font-black text-[var(--gold-strong)]">
-                <MapPinIcon size={15}/>ภายใน {filters.radiusKm} กม.
+                <MapPinIcon size={15}/>อ่านตำแหน่งแล้ว · {filters.radiusKm} กม.
               </div>
             )}
           </div>
@@ -97,14 +98,16 @@ export default async function RentPage({ searchParams }: { searchParams: SearchP
 
       <section className="mx-auto max-w-7xl px-4 py-8 sm:px-6 sm:py-10 lg:px-8">
         <div className="flex items-end justify-between gap-4">
-          <div><h2 className="text-xl font-black tracking-[-0.025em] sm:text-2xl">ของให้ยืม</h2><p className="mt-1 text-xs text-[var(--muted)] sm:text-sm">พบ {money.format(result.total)} รายการ</p></div>
+          <div><h2 className="text-xl font-black tracking-[-0.025em] sm:text-2xl">ของให้ยืม</h2><p className="mt-1 text-xs text-[var(--muted)] sm:text-sm">พบ {money.format(result.total)} รายการ{locationSearchActive ? ` ภายใน ${filters.radiusKm} กม.` : ""}</p></div>
           <Link href="/community/new" className="hidden text-sm font-black text-[var(--gold-strong)] sm:inline">หาไม่เจอ? โพสต์หา</Link>
         </div>
 
         {result.items.length > 0 ? (
           <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">{result.items.map((item) => <RentalCard key={item.id} item={item}/>)}</div>
+        ) : locationSearchActive ? (
+          <div className="mt-6"><EmptyState title={`อ่านตำแหน่งสำเร็จ แต่ยังไม่มีของใน ${filters.radiusKm} กม.`} description="GPS ทำงานแล้วและระบบค้นจากตำแหน่งปัจจุบันเรียบร้อย ลองเพิ่มระยะเป็น 50 กม. หรือเลือกจังหวัดเพื่อดูของที่ยังไม่ได้ตั้งพิกัด Nearby" actionHref="/rent" actionLabel="ค้นหาทุกพื้นที่"/></div>
         ) : (
-          <div className="mt-6"><EmptyState title="ยังไม่เจอของที่ตรงกับตัวกรอง" description="ลองขยายระยะ เปลี่ยนพื้นที่ หรือล้างตัวกรอง แล้วถ้ายังไม่เจอสามารถโพสต์ให้คอมมูช่วยหาได้" actionHref="/community/new" actionLabel="โพสต์หาของ"/></div>
+          <div className="mt-6"><EmptyState title="ยังไม่เจอของที่ตรงกับตัวกรอง" description="ลองเปลี่ยนคำค้น หมวดหมู่ จังหวัด หรือล้างตัวกรอง แล้วถ้ายังไม่เจอสามารถโพสต์ให้คอมมูช่วยหาได้" actionHref="/community/new" actionLabel="โพสต์หาของ"/></div>
         )}
 
         {result.totalPages > 1 && (
