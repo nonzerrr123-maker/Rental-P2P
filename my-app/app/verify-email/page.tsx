@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { BrandMark } from "@/components/ui/primitives";
@@ -13,7 +13,6 @@ import { Input } from "@/components/ui/input";
 import { emailOnlySchema, type EmailOnlyFormValues } from "@/lib/forms/auth";
 
 export default function VerifyEmailPage() {
-  const [token, setToken] = useState("");
   const [verifyMessage, setVerifyMessage] = useState("");
   const [verified, setVerified] = useState(false);
   const [verifying, setVerifying] = useState(false);
@@ -21,22 +20,19 @@ export default function VerifyEmailPage() {
   const {
     register,
     handleSubmit,
-    setValue,
     formState: { errors, isSubmitting },
   } = useForm<EmailOnlyFormValues>({
     resolver: zodResolver(emailOnlySchema),
     defaultValues: { email: "" },
   });
 
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    setToken(params.get("token")?.trim() ?? "");
-    const email = params.get("email")?.trim() ?? "";
-    if (email) setValue("email", email);
-  }, [setValue]);
-
   async function verify() {
-    if (!token || verifying) return;
+    if (verifying) return;
+    const token = new URLSearchParams(window.location.search).get("token")?.trim() ?? "";
+    if (!token) {
+      setVerifyMessage("ลิงก์ยืนยันอีเมลไม่ถูกต้อง กรุณาขอลิงก์ใหม่ด้านล่าง");
+      return;
+    }
     setVerifyMessage("");
     setVerifying(true);
     try {
@@ -89,7 +85,7 @@ export default function VerifyEmailPage() {
             <p className="text-sm leading-6 text-[var(--muted)]">ยืนยันว่าอีเมลนี้เป็นของคุณ ก่อนเปิดใช้การป้องกันบัญชีด้วยอีเมลแบบเต็มรูปแบบ</p>
           </CardHeader>
           <CardContent className="space-y-6 px-5 pb-5 sm:px-8 sm:pb-8">
-            {token && !verified && (
+            {!verified && (
               <div className="space-y-3">
                 <Button type="button" size="lg" disabled={verifying} onClick={verify} className="w-full">
                   {verifying ? "กำลังยืนยัน..." : <>ยืนยันอีเมลนี้<ArrowRightIcon size={17} /></>}
