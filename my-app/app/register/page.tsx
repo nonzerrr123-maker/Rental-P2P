@@ -15,6 +15,9 @@ import { registerSchema, type RegisterFormValues } from "@/lib/forms/auth";
 export default function RegisterPage() {
   const [message, setMessage] = useState("");
   const [done, setDone] = useState(false);
+  const [registeredEmail, setRegisteredEmail] = useState("");
+  const [verificationSent, setVerificationSent] = useState(false);
+  const [verificationRequired, setVerificationRequired] = useState(false);
   const {
     register,
     handleSubmit,
@@ -39,6 +42,9 @@ export default function RegisterPage() {
         setMessage(result.message ?? "สมัครสมาชิกไม่สำเร็จ");
         return;
       }
+      setRegisteredEmail(result.user?.email ?? parsed.email);
+      setVerificationSent(result.emailVerification?.sent === true);
+      setVerificationRequired(result.emailVerification?.required === true);
       setDone(true);
       resetField("password");
     } catch {
@@ -58,8 +64,15 @@ export default function RegisterPage() {
             <CardContent className="px-5 py-10 text-center sm:px-8">
               <div className="mx-auto grid h-14 w-14 place-items-center rounded-full bg-emerald-50 text-emerald-700"><CheckIcon size={26} /></div>
               <h1 className="mt-5 text-2xl font-black tracking-[-0.035em]">สร้างบัญชีเรียบร้อย</h1>
-              <p className="mt-2 text-sm leading-6 text-[var(--muted)]">ขั้นต่อไปเข้าสู่ระบบ แล้วทำ KYC เพื่อปลดล็อกการยืมและปล่อยของ</p>
-              <Link href="/login" className="mt-6 inline-flex min-h-12 items-center gap-2 rounded-xl bg-[var(--ink)] px-5 py-3 text-sm font-black text-white">ไปเข้าสู่ระบบ<ArrowRightIcon size={17} /></Link>
+              {verificationSent ? (
+                <p className="mt-2 text-sm leading-6 text-[var(--muted)]">เราส่งลิงก์ยืนยันไปที่ <span className="font-black text-[var(--ink)]">{registeredEmail}</span> แล้ว ยืนยันอีเมลก่อนเพื่อเพิ่มความปลอดภัยให้บัญชี</p>
+              ) : (
+                <p className="mt-2 text-sm leading-6 text-[var(--muted)]">สร้างบัญชีแล้ว แต่ระบบอีเมลยังส่งลิงก์ยืนยันไม่สำเร็จ คุณสามารถขอส่งใหม่จากหน้า Verify Email ได้</p>
+              )}
+              <div className="mt-6 grid gap-3">
+                <Link href={`/verify-email?email=${encodeURIComponent(registeredEmail)}`} className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-[var(--ink)] px-5 py-3 text-sm font-black text-white">ไปหน้ายืนยันอีเมล<ArrowRightIcon size={17} /></Link>
+                {!verificationRequired && <Link href="/login" className="inline-flex min-h-11 items-center justify-center rounded-xl border border-[var(--line)] px-4 py-2 text-sm font-black">เข้าสู่ระบบก่อน แล้วทำ KYC ต่อ</Link>}
+              </div>
             </CardContent>
           ) : (
             <>
