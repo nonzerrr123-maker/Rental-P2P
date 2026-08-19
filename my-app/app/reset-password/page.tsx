@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { BrandMark } from "@/components/ui/primitives";
@@ -13,7 +13,6 @@ import { Input } from "@/components/ui/input";
 import { resetPasswordSchema, type ResetPasswordFormValues } from "@/lib/forms/auth";
 
 export default function ResetPasswordPage() {
-  const [token, setToken] = useState("");
   const [message, setMessage] = useState("");
   const [done, setDone] = useState(false);
   const {
@@ -26,12 +25,9 @@ export default function ResetPasswordPage() {
     defaultValues: { password: "", confirmPassword: "" },
   });
 
-  useEffect(() => {
-    setToken(new URLSearchParams(window.location.search).get("token")?.trim() ?? "");
-  }, []);
-
   const submit = handleSubmit(async (values) => {
     setMessage("");
+    const token = new URLSearchParams(window.location.search).get("token")?.trim() ?? "";
     if (!token) {
       setMessage("ลิงก์ตั้งรหัสผ่านไม่ถูกต้อง กรุณาขอลิงก์ใหม่");
       return;
@@ -88,10 +84,10 @@ export default function ResetPasswordPage() {
                   <FormMessage>{errors.confirmPassword?.message}</FormMessage>
                 </FormField>
                 {message && <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{message}</p>}
-                <Button type="submit" size="lg" disabled={isSubmitting || !token} className="w-full">
+                <Button type="submit" size="lg" disabled={isSubmitting} className="w-full">
                   {isSubmitting ? "กำลังบันทึก..." : <>ตั้งรหัสผ่านใหม่<ArrowRightIcon size={17} /></>}
                 </Button>
-                {!token && <p className="text-center text-xs text-[var(--muted)]"><Link href="/forgot-password" className="font-black underline underline-offset-4">ขอลิงก์ตั้งรหัสผ่านใหม่</Link></p>}
+                <p className="text-center text-xs text-[var(--muted)]"><Link href="/forgot-password" className="font-black underline underline-offset-4">ขอลิงก์ตั้งรหัสผ่านใหม่</Link></p>
               </form>
             )}
           </CardContent>
