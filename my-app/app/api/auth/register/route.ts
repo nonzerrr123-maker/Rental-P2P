@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import type { QueryResultRow } from "pg";
 import { query } from "@/lib/db";
 import { hashPassword } from "@/lib/auth/password";
+import { sendVerificationForUser } from "@/lib/email/auth-workflows";
+import { isEmailVerificationRequired, resolveEmailPublicBaseUrl } from "@/lib/email/resend";
 
 export const runtime = "nodejs";
 
@@ -47,6 +49,15 @@ export async function POST(request: Request) {
     );
     const user = result.rows[0];
 
+    const emailVerification = await sendVerificationForUser({
+      userId: user.id,
+      email: user.email,
+      displayName: user.display_name,
+      baseUrl: resolveEmailPublicBaseUrl(request),
+      enforceCooldown: false,
+    });
+    const verificationRequired = isEmailVerificationRequired();
+
     return NextResponse.json(
       {
         ok: true,
@@ -57,7 +68,11 @@ export async function POST(request: Request) {
           role: user.role,
           verificationStatus: user.verification_status,
         },
-        redirect: "/login",
+        emailVerification: {
+          required: verificationRequired,
+          sent: emailVerification.sent,
+        },
+        redirect: verificationRequired ? `/verify-email?email=${encodeURIComponent(user.email)}` : "/login",
       },
       { status: 201 },
     );
