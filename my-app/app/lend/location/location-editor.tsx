@@ -69,7 +69,7 @@ export default function LocationEditor({ items }: { items: Item[] }) {
     });
   };
 
-  const useCurrentLocation = async () => {
+  const applyCurrentLocation = async () => {
     setLocating(true);
     setMessage("");
     try {
@@ -150,7 +150,7 @@ export default function LocationEditor({ items }: { items: Item[] }) {
           <div className="rounded-2xl bg-neutral-50 p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div><p className="font-black">พิกัดสำหรับคำนวณระยะทาง</p><p className="mt-1 text-xs text-neutral-500">พิกัดเก็บไว้ฝั่ง server เพื่อคำนวณระยะเท่านั้น Public Marketplace ไม่คืนพิกัดจริงของเจ้าของ</p></div>
-              <button type="button" disabled={locating} onClick={() => void useCurrentLocation()} className="inline-flex items-center gap-2 rounded-xl border border-[#c9a227] bg-white px-4 py-2.5 text-sm font-black text-[#806515] disabled:opacity-50"><MapPinIcon size={16}/>{locating ? "กำลังอ่าน GPS..." : "ใช้ตำแหน่งปัจจุบัน"}</button>
+              <button type="button" disabled={locating} onClick={() => void applyCurrentLocation()} className="inline-flex items-center gap-2 rounded-xl border border-[#c9a227] bg-white px-4 py-2.5 text-sm font-black text-[#806515] disabled:opacity-50"><MapPinIcon size={16}/>{locating ? "กำลังอ่าน GPS..." : "ใช้ตำแหน่งปัจจุบัน"}</button>
             </div>
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
               <label className="text-sm font-bold">Latitude
