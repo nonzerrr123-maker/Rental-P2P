@@ -23,6 +23,7 @@ function safeNextPath(): string | null {
 export default function LoginPage() {
   const router = useRouter();
   const [message, setMessage] = useState("");
+  const [verificationEmail, setVerificationEmail] = useState("");
   const {
     register,
     handleSubmit,
@@ -34,6 +35,7 @@ export default function LoginPage() {
 
   const submit = handleSubmit(async (values) => {
     setMessage("");
+    setVerificationEmail("");
     try {
       const parsed = loginSchema.parse(values);
       const response = await fetch("/api/auth/login", {
@@ -44,6 +46,9 @@ export default function LoginPage() {
       const result = await response.json();
       if (!response.ok || !result.ok) {
         setMessage(result.message ?? "เข้าสู่ระบบไม่สำเร็จ");
+        if (result.code === "EMAIL_VERIFICATION_REQUIRED" && typeof result.verificationEmail === "string") {
+          setVerificationEmail(result.verificationEmail);
+        }
         return;
       }
       const isPrivileged = result.user?.role === "ADMIN" || result.user?.role === "SUPERADMIN";
@@ -77,11 +82,19 @@ export default function LoginPage() {
                 <FormMessage>{errors.email?.message}</FormMessage>
               </FormField>
               <FormField>
-                <FormLabel htmlFor="login-password">รหัสผ่าน</FormLabel>
+                <div className="flex items-center justify-between gap-3">
+                  <FormLabel htmlFor="login-password">รหัสผ่าน</FormLabel>
+                  <Link href="/forgot-password" className="text-xs font-black text-[var(--gold-strong)]">ลืมรหัสผ่าน?</Link>
+                </div>
                 <Input id="login-password" type="password" autoComplete="current-password" placeholder="••••••••" aria-invalid={Boolean(errors.password)} {...register("password")} />
                 <FormMessage>{errors.password?.message}</FormMessage>
               </FormField>
-              {message && <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{message}</p>}
+              {message && (
+                <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">
+                  <p>{message}</p>
+                  {verificationEmail && <Link href={`/verify-email?email=${encodeURIComponent(verificationEmail)}`} className="mt-2 inline-block font-black underline underline-offset-4">ส่งลิงก์ยืนยันอีเมลอีกครั้ง</Link>}
+                </div>
+              )}
               <Button type="submit" size="lg" disabled={isSubmitting} className="w-full">
                 {isSubmitting ? "กำลังเข้าสู่ระบบ..." : <>เข้าสู่ระบบ<ArrowRightIcon size={17} /></>}
               </Button>
