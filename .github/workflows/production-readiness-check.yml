@@ -1,0 +1,127 @@
+name: Production readiness check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/**"
+      - ".github/workflows/production-readiness-check.yml"
+  push:
+    branches: [main]
+    paths:
+      - "my-app/**"
+      - ".github/workflows/production-readiness-check.yml"
+
+jobs:
+  validate-production-readiness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: p2p_rental
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d p2p_rental"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/p2p_rental
+      DATABASE_POOL_MAX: 6
+      ADMIN_EMAIL: superadmin.production-ci@example.com
+      ADMIN_PASSWORD: production-ci-superadmin-password-32
+      APP_BASE_URL: https://borowborow.example.test
+      RESEND_API_BASE_URL: https://api.resend.com
+      RESEND_API_KEY: re_test_production_preflight
+      EMAIL_FROM: Borow Borow <noreply@borowborow.example.test>
+      EMAIL_REQUIRE_VERIFICATION: true
+      EMAIL_VERIFICATION_TTL_MINUTES: 1440
+      PASSWORD_RESET_TTL_MINUTES: 30
+      AUTH_EMAIL_RESEND_COOLDOWN_SECONDS: 60
+      KYC_PROVIDER: manual
+      URGENT_RESERVATION_TTL_MINUTES: 15
+      PAYMENT_PROVIDER: omise
+      SANDBOX_PAYMENT_ENABLED: false
+      OMISE_API_BASE_URL: https://api.omise.co
+      OMISE_SECRET_KEY: skey_test_production_preflight
+      OMISE_REQUEST_TIMEOUT_MS: 8000
+      OMISE_ENABLE_LIVE_PAYOUTS: false
+      OBJECT_STORAGE_ENDPOINT: https://example.r2.cloudflarestorage.com
+      OBJECT_STORAGE_REGION: auto
+      OBJECT_STORAGE_ACCESS_KEY_ID: production-ci-access-key
+      OBJECT_STORAGE_SECRET_ACCESS_KEY: production-ci-secret-key
+      OBJECT_STORAGE_BUCKET: borow-borow-production-ci
+      OBJECT_STORAGE_FORCE_PATH_STYLE: true
+      OBJECT_STORAGE_REQUEST_TIMEOUT_MS: 15000
+      RESEND_REQUEST_TIMEOUT_MS: 8000
+      PERSONA_REQUEST_TIMEOUT_MS: 8000
+      NEXT_TELEMETRY_DISABLED: 1
+
+    defaults:
+      run:
+        working-directory: my-app
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply canonical database baseline
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+
+      - name: Apply tracked migrations
+        run: npm run db:migrate
+
+      - name: Verify migration ledger and migrated schema
+        run: |
+          expected=$(find docs/migrations -maxdepth 1 -type f -name '*.sql' | wc -l | tr -d ' ')
+          applied=$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM schema_migrations")
+          test "$applied" = "$expected"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='avatar_storage_key'")" = "1"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='auth_action_tokens'")" = "1"
+
+      - name: Prove migrations are idempotent
+        run: |
+          before=$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM schema_migrations")
+          npm run db:migrate
+          after=$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM schema_migrations")
+          test "$before" = "$after"
+          npm run db:status
+
+      - name: Validate production configuration contract
+        run: npm run preflight:production
+
+      - name: Reject unsafe production defaults
+        run: |
+          set +e
+          ADMIN_PASSWORD=change-this-password \
+          APP_BASE_URL=http://localhost:3000 \
+          EMAIL_FROM='Borow Borow <onboarding@resend.dev>' \
+          EMAIL_REQUIRE_VERIFICATION=false \
+          PAYMENT_PROVIDER=sandbox \
+          SANDBOX_PAYMENT_ENABLED=true \
+          npm run preflight:production >/tmp/unsafe-preflight.log 2>&1
+          code=$?
+          set -e
+          test "$code" -ne 0
+          grep -q 'FAIL' /tmp/unsafe-preflight.log
+
+      - name: Lint readiness tooling
+        run: npx eslint scripts/db-migrate.mjs scripts/production-preflight.mjs
+
+      - name: Build against fully migrated database
+        run: npm run build
