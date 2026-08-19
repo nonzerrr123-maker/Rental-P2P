@@ -6,18 +6,178 @@ import SiteHeader from "@/components/site-header";
 import { CheckIcon, ClockIcon, CreditCardIcon, ShieldCheckIcon } from "@/components/ui/icons";
 import type { CheckoutSummary, PaymentSummary } from "@/lib/payments/service";
 
-const money=new Intl.NumberFormat("th-TH",{minimumFractionDigits:2,maximumFractionDigits:2});
-const dateTime=new Intl.DateTimeFormat("th-TH",{dateStyle:"medium",timeStyle:"short"});
-const typeLabel:Record<string,string>={RENTAL:"ค่าเช่า",DEPOSIT:"เงินประกัน",URGENT_RESERVATION_FEE:"ค่าจองยืมด่วน",PLATFORM_FEE:"ค่าบริการแพลตฟอร์ม",REFUND:"คืนเงิน"};
-function statusClass(status:string){if(status==="SUCCEEDED")return"bg-emerald-50 text-emerald-700";if(["FAILED","CANCELLED"].includes(status))return"bg-red-50 text-red-700";if(status==="REFUNDED")return"bg-blue-50 text-blue-700";return"bg-amber-50 text-amber-800";}
-function PaymentCard({payment,busy,onConfirm}:{payment:PaymentSummary;busy:boolean;onConfirm:(payment:PaymentSummary)=>void}){return <article className="rounded-[22px] border border-[var(--line)] bg-white p-4 sm:p-5"><div className="flex items-start justify-between gap-4"><div><div className="flex items-center gap-2"><CreditCardIcon size={17} className="text-[var(--gold-strong)]"/><p className="font-black">{typeLabel[payment.type]??payment.type}</p></div><p className="mt-2 text-2xl font-black">฿{money.format(Number(payment.amount))}</p><p className="mt-1 text-[10px] text-[var(--muted)]">{payment.provider} · {payment.id.slice(0,8)}</p></div><span className={`rounded-full px-2.5 py-1 text-[10px] font-black ${statusClass(payment.status)}`}>{payment.status}</span></div>{payment.action.kind==="SANDBOX"&&payment.status!=="SUCCEEDED"&&<button type="button" disabled={busy} onClick={()=>onConfirm(payment)} className="mt-4 min-h-11 w-full rounded-xl bg-[var(--ink)] px-4 text-sm font-black text-white disabled:opacity-40">{busy?"กำลังยืนยัน...":"ยืนยันการจ่าย (Sandbox)"}</button>}{payment.action.kind==="REDIRECT"&&payment.action.url&&<a href={payment.action.url} className="mt-4 block min-h-11 rounded-xl bg-[var(--ink)] px-4 py-3 text-center text-sm font-black text-white">ไปหน้าชำระเงิน</a>}{payment.action.kind==="QR"&&payment.action.imageUrl&&<div className="mt-4 rounded-xl bg-[var(--surface-2)] p-4 text-center"><p className="text-xs font-bold">สแกน QR จากผู้ให้บริการชำระเงิน</p><a href={payment.action.imageUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block text-sm font-black text-[var(--gold-strong)]">เปิด QR</a></div>}</article>;}
+const money = new Intl.NumberFormat("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const dateTime = new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short" });
+const typeLabel: Record<string, string> = {
+  RENTAL: "ค่าเช่า",
+  DEPOSIT: "เงินประกัน",
+  URGENT_RESERVATION_FEE: "ค่าจองยืมด่วน",
+  PLATFORM_FEE: "ค่าบริการแพลตฟอร์ม",
+  REFUND: "คืนเงิน",
+};
 
-export default function CheckoutClient({rentalRequestId,displayName}:{rentalRequestId:string;displayName:string}){
- const[checkout,setCheckout]=useState<CheckoutSummary|null>(null);const[loading,setLoading]=useState(true);const[busy,setBusy]=useState("");const[error,setError]=useState("");
- const load=async()=>{const response=await fetch(`/api/payments/checkout?rentalRequestId=${encodeURIComponent(rentalRequestId)}`,{cache:"no-store"});const payload=await response.json();if(!response.ok||!payload.ok)throw new Error(payload.message||"โหลดข้อมูลชำระเงินไม่สำเร็จ");setCheckout(payload.checkout as CheckoutSummary);};
- useEffect(()=>{let active=true;fetch(`/api/payments/checkout?rentalRequestId=${encodeURIComponent(rentalRequestId)}`,{cache:"no-store"}).then(async(response)=>{const payload=await response.json();if(!response.ok||!payload.ok)throw new Error(payload.message||"โหลดข้อมูลชำระเงินไม่สำเร็จ");return payload.checkout as CheckoutSummary;}).then((data)=>{if(active){setCheckout(data);setError("");}}).catch((cause:unknown)=>{if(active)setError(cause instanceof Error?cause.message:"โหลดข้อมูลชำระเงินไม่สำเร็จ");}).finally(()=>{if(active)setLoading(false);});return()=>{active=false;};},[rentalRequestId]);
- const start=async()=>{setBusy("start");setError("");try{const response=await fetch("/api/payments/checkout",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({rentalRequestId,amount:1,status:"PAID",payerId:"ignored"})});const payload=await response.json();if(!response.ok||!payload.ok)throw new Error(payload.message||"เริ่มชำระเงินไม่สำเร็จ");setCheckout(payload.checkout as CheckoutSummary);}catch(cause){setError(cause instanceof Error?cause.message:"เริ่มชำระเงินไม่สำเร็จ");}finally{setBusy("");}};
- const confirm=async(payment:PaymentSummary)=>{if(payment.action.kind!=="SANDBOX"||!payment.action.confirmPath)return;setBusy(payment.id);setError("");try{const response=await fetch(payment.action.confirmPath,{method:"POST"});const payload=await response.json();if(!response.ok||!payload.ok)throw new Error(payload.message||"ยืนยันการชำระไม่สำเร็จ");setCheckout(payload.checkout as CheckoutSummary);}catch(cause){setError(cause instanceof Error?cause.message:"ยืนยันการชำระไม่สำเร็จ");}finally{setBusy("");}};
- const pending=checkout?.payments.filter((payment)=>!["SUCCEEDED","REFUNDED"].includes(payment.status))??[];const complete=checkout?.status==="PAID";
- return <main className="min-h-screen bg-[var(--canvas)] text-[var(--ink)]"><SiteHeader/><div className="mx-auto max-w-4xl px-4 py-8 sm:px-6 sm:py-12"><p className="bb-label">SECURE CHECKOUT</p><h1 className="mt-2 text-3xl font-black tracking-[-0.045em] sm:text-4xl">ชำระเงินการยืม</h1><p className="mt-2 text-sm text-[var(--muted)]">ผู้ชำระ: {displayName} · ยอดทั้งหมดมาจาก booking snapshot ฝั่ง server</p>{loading&&<div className="mt-7 rounded-[22px] border border-[var(--line)] bg-white p-6 text-sm text-[var(--muted)]">กำลังโหลด...</div>}{error&&<div role="alert" className="mt-5 rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-700">{error}</div>}{checkout&&<><section className="mt-7 rounded-[26px] border border-[var(--line)] bg-white p-5 shadow-[var(--shadow-soft)] sm:p-6"><div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between"><div className="min-w-0"><p className="text-xs text-[var(--muted)]">รายการ</p><h2 className="mt-1 truncate text-xl font-black sm:text-2xl">{checkout.item.title}</h2><p className="mt-2 text-[10px] text-[var(--muted)]">Rental {checkout.rentalRequestId.slice(0,8)}</p></div><div className="rounded-2xl bg-[var(--surface-2)] p-4 sm:text-right"><p className="text-xs text-[var(--muted)]">ยอดที่แพลตฟอร์มเรียกเก็บ</p><p className="mt-1 text-3xl font-black">฿{money.format(Number(checkout.requiredAmount))}</p><p className="mt-1 text-[10px] text-[var(--muted)]">{checkout.collectionPolicy==="URGENT_PLATFORM_ONLY"?"ค่าจองด่วน + เงินประกัน":"ค่าเช่า + เงินประกัน"}</p></div></div>{checkout.isUrgent&&checkout.reservationExpiresAt&&!complete&&<div className="mt-4 flex items-center gap-2 rounded-xl bg-amber-50 p-3 text-xs font-bold text-amber-800"><ClockIcon size={16}/>ชำระก่อน {dateTime.format(new Date(checkout.reservationExpiresAt))}</div>}{checkout.deposit&&<div className="mt-4 flex items-start gap-2 border-t border-[var(--line)] pt-4 text-xs leading-5 text-[var(--muted)]"><ShieldCheckIcon size={16} className="shrink-0 text-[var(--gold-strong)]"/><span>เงินประกัน ฿{money.format(Number(checkout.deposit.amount))} · {checkout.deposit.status} · ระบบจัดการ release/refund/forfeit ตามสถานะ</span></div>}</section>{checkout.payments.length===0&&!complete&&<button type="button" disabled={busy==="start"} onClick={()=>void start()} className="mt-5 min-h-12 w-full rounded-xl bg-[var(--gold)] px-5 text-base font-black text-[var(--ink)] disabled:opacity-40">{busy==="start"?"กำลังสร้างรายการ...":"เริ่มชำระเงิน"}</button>}{checkout.payments.length>0&&<section className="mt-5 grid gap-3 sm:grid-cols-2">{checkout.payments.filter((payment)=>payment.type!=="REFUND").map((payment)=><PaymentCard key={payment.id} payment={payment} busy={busy===payment.id} onConfirm={(entry)=>void confirm(entry)}/>)}</section>}{complete&&<div className="mt-5 rounded-[24px] border border-emerald-200 bg-emerald-50 p-5"><div className="flex items-center gap-2 text-emerald-800"><CheckIcon size={20}/><p className="text-lg font-black">ชำระครบแล้ว</p></div><p className="mt-2 text-sm leading-6 text-emerald-700">Rental เปลี่ยนเป็น PAID จาก server หลังตรวจ payment obligation ครบ</p><Link href="/dashboard" className="mt-4 inline-flex rounded-xl bg-emerald-800 px-5 py-3 text-sm font-black text-white">กลับ Dashboard</Link></div>}{!complete&&checkout.payments.length>0&&pending.length===0&&<button type="button" onClick={()=>void load()} className="mt-5 min-h-11 rounded-xl border border-[var(--line)] px-4 text-sm font-black">รีเฟรชสถานะ</button>}{checkout.provider.mode==="SANDBOX"&&<p className="mt-5 text-center text-[10px] text-[var(--muted)]">Sandbox provider · ไม่มีการตัดเงินจริง</p>}</>}</div></main>;
+function statusClass(status: string) {
+  if (status === "SUCCEEDED") return "bg-emerald-50 text-emerald-700";
+  if (["FAILED", "CANCELLED"].includes(status)) return "bg-red-50 text-red-700";
+  if (status === "REFUNDED") return "bg-blue-50 text-blue-700";
+  return "bg-amber-50 text-amber-800";
+}
+
+function PaymentCard({ payment, busy, onConfirm }: { payment: PaymentSummary; busy: boolean; onConfirm: (payment: PaymentSummary) => void }) {
+  return (
+    <article className="min-w-0 rounded-[22px] border border-[var(--line)] bg-white p-4 sm:p-5">
+      <div className="flex flex-col gap-3 min-[420px]:flex-row min-[420px]:items-start min-[420px]:justify-between">
+        <div className="min-w-0">
+          <div className="flex min-w-0 items-center gap-2">
+            <CreditCardIcon size={17} className="shrink-0 text-[var(--gold-strong)]" />
+            <p className="truncate font-black">{typeLabel[payment.type] ?? payment.type}</p>
+          </div>
+          <p className="mt-2 break-words text-2xl font-black">฿{money.format(Number(payment.amount))}</p>
+          <p className="mt-1 truncate text-[10px] text-[var(--muted)]">{payment.provider} · {payment.id.slice(0, 8)}</p>
+        </div>
+        <span className={`self-start whitespace-nowrap rounded-full px-2.5 py-1 text-[10px] font-black ${statusClass(payment.status)}`}>{payment.status}</span>
+      </div>
+      {payment.action.kind === "SANDBOX" && payment.status !== "SUCCEEDED" && (
+        <button type="button" disabled={busy} onClick={() => onConfirm(payment)} className="mt-4 min-h-11 w-full rounded-xl bg-[var(--ink)] px-4 text-sm font-black text-white disabled:opacity-40">
+          {busy ? "กำลังยืนยัน..." : "ยืนยันการจ่าย (Sandbox)"}
+        </button>
+      )}
+      {payment.action.kind === "REDIRECT" && payment.action.url && <a href={payment.action.url} className="mt-4 block min-h-11 rounded-xl bg-[var(--ink)] px-4 py-3 text-center text-sm font-black text-white">ไปหน้าชำระเงิน</a>}
+      {payment.action.kind === "QR" && payment.action.imageUrl && (
+        <div className="mt-4 rounded-xl bg-[var(--surface-2)] p-4 text-center">
+          <p className="text-xs font-bold">สแกน QR จากผู้ให้บริการชำระเงิน</p>
+          <a href={payment.action.imageUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block text-sm font-black text-[var(--gold-strong)]">เปิด QR</a>
+        </div>
+      )}
+    </article>
+  );
+}
+
+export default function CheckoutClient({ rentalRequestId, displayName }: { rentalRequestId: string; displayName: string }) {
+  const [checkout, setCheckout] = useState<CheckoutSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+
+  const load = async () => {
+    const response = await fetch(`/api/payments/checkout?rentalRequestId=${encodeURIComponent(rentalRequestId)}`, { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) throw new Error(payload.message || "โหลดข้อมูลชำระเงินไม่สำเร็จ");
+    setCheckout(payload.checkout as CheckoutSummary);
+  };
+
+  useEffect(() => {
+    let active = true;
+    fetch(`/api/payments/checkout?rentalRequestId=${encodeURIComponent(rentalRequestId)}`, { cache: "no-store" })
+      .then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.message || "โหลดข้อมูลชำระเงินไม่สำเร็จ");
+        return payload.checkout as CheckoutSummary;
+      })
+      .then((data) => { if (active) { setCheckout(data); setError(""); } })
+      .catch((cause: unknown) => { if (active) setError(cause instanceof Error ? cause.message : "โหลดข้อมูลชำระเงินไม่สำเร็จ"); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [rentalRequestId]);
+
+  const start = async () => {
+    setBusy("start");
+    setError("");
+    try {
+      const response = await fetch("/api/payments/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rentalRequestId, amount: 1, status: "PAID", payerId: "ignored" }),
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) throw new Error(payload.message || "เริ่มชำระเงินไม่สำเร็จ");
+      setCheckout(payload.checkout as CheckoutSummary);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "เริ่มชำระเงินไม่สำเร็จ");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const confirm = async (payment: PaymentSummary) => {
+    if (payment.action.kind !== "SANDBOX" || !payment.action.confirmPath) return;
+    setBusy(payment.id);
+    setError("");
+    try {
+      const response = await fetch(payment.action.confirmPath, { method: "POST" });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) throw new Error(payload.message || "ยืนยันการชำระไม่สำเร็จ");
+      setCheckout(payload.checkout as CheckoutSummary);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "ยืนยันการชำระไม่สำเร็จ");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const pending = checkout?.payments.filter((payment) => !["SUCCEEDED", "REFUNDED"].includes(payment.status)) ?? [];
+  const complete = checkout?.status === "PAID";
+
+  return (
+    <main className="min-h-screen bg-[var(--canvas)] text-[var(--ink)]">
+      <SiteHeader />
+      <div className="mx-auto max-w-4xl px-4 py-7 sm:px-6 sm:py-10 lg:py-12">
+        <p className="bb-label">SECURE CHECKOUT</p>
+        <h1 className="mt-2 text-3xl font-black tracking-[-0.045em] sm:text-4xl">ชำระเงินการยืม</h1>
+        <p className="mt-2 break-words text-sm leading-6 text-[var(--muted)]">ผู้ชำระ: {displayName} · ยอดทั้งหมดมาจาก booking snapshot ฝั่ง server</p>
+
+        {loading && <div className="mt-7 rounded-[22px] border border-[var(--line)] bg-white p-6 text-sm text-[var(--muted)]">กำลังโหลด...</div>}
+        {error && <div role="alert" className="mt-5 rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-700">{error}</div>}
+
+        {checkout && <>
+          <section className="mt-7 rounded-[26px] border border-[var(--line)] bg-white p-4 shadow-[var(--shadow-soft)] sm:p-6">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div className="min-w-0 flex-1">
+                <p className="text-xs text-[var(--muted)]">รายการ</p>
+                <h2 className="mt-1 break-words text-xl font-black sm:text-2xl">{checkout.item.title}</h2>
+                <p className="mt-2 text-[10px] text-[var(--muted)]">Rental {checkout.rentalRequestId.slice(0, 8)}</p>
+              </div>
+              <div className="min-w-0 rounded-2xl bg-[var(--surface-2)] p-4 lg:min-w-64 lg:shrink-0 lg:text-right">
+                <p className="text-xs text-[var(--muted)]">ยอดที่แพลตฟอร์มเรียกเก็บ</p>
+                <p className="mt-1 break-words text-2xl font-black sm:text-3xl">฿{money.format(Number(checkout.requiredAmount))}</p>
+                <p className="mt-1 text-[10px] leading-4 text-[var(--muted)]">{checkout.collectionPolicy === "URGENT_PLATFORM_ONLY" ? "ค่าจองด่วน + เงินประกัน" : "ค่าเช่า + เงินประกัน"}</p>
+              </div>
+            </div>
+            {checkout.isUrgent && checkout.reservationExpiresAt && !complete && (
+              <div className="mt-4 flex items-start gap-2 rounded-xl bg-amber-50 p-3 text-xs font-bold leading-5 text-amber-800">
+                <ClockIcon size={16} className="mt-0.5 shrink-0" />
+                <span>ชำระก่อน {dateTime.format(new Date(checkout.reservationExpiresAt))}</span>
+              </div>
+            )}
+            {checkout.deposit && (
+              <div className="mt-4 flex items-start gap-2 border-t border-[var(--line)] pt-4 text-xs leading-5 text-[var(--muted)]">
+                <ShieldCheckIcon size={16} className="mt-0.5 shrink-0 text-[var(--gold-strong)]" />
+                <span>เงินประกัน ฿{money.format(Number(checkout.deposit.amount))} · {checkout.deposit.status} · ระบบจัดการ release/refund/forfeit ตามสถานะ</span>
+              </div>
+            )}
+          </section>
+
+          {checkout.payments.length === 0 && !complete && (
+            <button type="button" disabled={busy === "start"} onClick={() => void start()} className="mt-5 min-h-12 w-full rounded-xl bg-[var(--gold)] px-5 text-base font-black text-[var(--ink)] disabled:opacity-40">
+              {busy === "start" ? "กำลังสร้างรายการ..." : "เริ่มชำระเงิน"}
+            </button>
+          )}
+          {checkout.payments.length > 0 && (
+            <section className="mt-5 grid gap-3 md:grid-cols-2">
+              {checkout.payments.filter((payment) => payment.type !== "REFUND").map((payment) => <PaymentCard key={payment.id} payment={payment} busy={busy === payment.id} onConfirm={(entry) => void confirm(entry)} />)}
+            </section>
+          )}
+          {complete && (
+            <div className="mt-5 rounded-[24px] border border-emerald-200 bg-emerald-50 p-5">
+              <div className="flex items-center gap-2 text-emerald-800"><CheckIcon size={20} /><p className="text-lg font-black">ชำระครบแล้ว</p></div>
+              <p className="mt-2 text-sm leading-6 text-emerald-700">Rental เปลี่ยนเป็น PAID จาก server หลังตรวจ payment obligation ครบ</p>
+              <Link href="/dashboard" className="mt-4 inline-flex rounded-xl bg-emerald-800 px-5 py-3 text-sm font-black text-white">กลับ Dashboard</Link>
+            </div>
+          )}
+          {!complete && checkout.payments.length > 0 && pending.length === 0 && <button type="button" onClick={() => void load()} className="mt-5 min-h-11 rounded-xl border border-[var(--line)] px-4 text-sm font-black">รีเฟรชสถานะ</button>}
+          {checkout.provider.mode === "SANDBOX" && <p className="mt-5 text-center text-[10px] text-[var(--muted)]">Sandbox provider · ไม่มีการตัดเงินจริง</p>}
+        </>}
+      </div>
+    </main>
+  );
 }
