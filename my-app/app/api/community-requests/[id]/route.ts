@@ -52,7 +52,11 @@ export async function PATCH(
     const before = await getCommunityRequest(id);
     const item = await updateCommunityRequest(user.id, id, body);
     if (before && before.requesterId === user.id) {
-      await notifyPendingLendersAboutCommunityEdit(before, item);
+      try {
+        await notifyPendingLendersAboutCommunityEdit(before, item);
+      } catch (notificationError) {
+        console.error("Failed to notify lenders about community edit", notificationError);
+      }
     }
     return NextResponse.json({ ok: true, request: toPublicCommunityRequest(item) });
   } catch (error) {
