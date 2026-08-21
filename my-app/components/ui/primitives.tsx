@@ -6,7 +6,11 @@ export function BrandMark({ compact = false }: { compact?: boolean }) {
   return (
     <span className="inline-flex items-center gap-2 font-black tracking-[-0.04em] text-[var(--ink)]">
       <span className="grid h-8 w-8 place-items-center rounded-[10px] bg-[var(--ink)] text-[13px] tracking-[-0.08em] text-[var(--gold)]">BB</span>
-      {!compact && <span className="text-xl sm:text-[22px]">Borow Borow</span>}
+      {!compact && (
+        <span className="text-xl sm:text-[22px]">
+          <span>Borow</span>{" "}<span className="text-[var(--gold-strong)]">Borow</span>
+        </span>
+      )}
     </span>
   );
 }
