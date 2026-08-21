@@ -25,6 +25,7 @@ export function ArrowRightIcon(props: IconProps) { return <IconBase {...props}><
 export function ChevronRightIcon(props: IconProps) { return <IconBase {...props}><path d="m9 18 6-6-6-6"/></IconBase>; }
 export function ChevronLeftIcon(props: IconProps) { return <IconBase {...props}><path d="m15 18-6-6 6-6"/></IconBase>; }
 export function CheckIcon(props: IconProps) { return <IconBase {...props}><path d="m5 12 4 4L19 6"/></IconBase>; }
+export function SaveIcon(props: IconProps) { return <IconBase {...props}><path d="M5 3h12l2 2v16H5V3Z"/><path d="M8 3v6h8V3M8 21v-7h8v7"/></IconBase>; }
 export function SlidersIcon(props: IconProps) { return <IconBase {...props}><path d="M4 6h16M7 12h10M10 18h4"/></IconBase>; }
 export function ImageIcon(props: IconProps) { return <IconBase {...props}><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9" r="1.5"/><path d="m21 15-5-5L5 20"/></IconBase>; }
 export function HeartIcon(props: IconProps) { return <IconBase {...props}><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.9-8.6a5.5 5.5 0 0 0-.1-7.8Z"/></IconBase>; }
