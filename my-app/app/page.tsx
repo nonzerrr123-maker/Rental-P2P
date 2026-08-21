@@ -83,7 +83,7 @@ export default async function Home() {
           <div className="flex flex-col justify-center">
             <SectionEyebrow>Borow Borow · Peer-to-peer rental</SectionEyebrow>
             <h1 className="mt-4 max-w-3xl text-[clamp(3rem,7vw,5.8rem)] font-black leading-[.94] tracking-[-0.065em]">
-              อยากใช้<br/><span className="text-[var(--gold-strong)]">ไม่ต้องซื้อ</span>
+              อยากใช้<br/><span className="ml-[200px] inline-block text-[var(--gold-strong)]">ไม่ต้องซื้อ</span>
             </h1>
             <p className="mt-6 max-w-xl text-base leading-7 text-[var(--muted-strong)] sm:text-lg sm:leading-8">
               ยืมของจากคนใกล้ตัวแบบมีตัวตนจริง เลือกช่วงเวลา จ่ายผ่านระบบ แชต นัดรับ และคืนของใน flow เดียว
