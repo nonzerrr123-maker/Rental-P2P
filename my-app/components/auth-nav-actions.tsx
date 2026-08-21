@@ -13,6 +13,7 @@ import {
   LogOutIcon,
   MapPinIcon,
   MessageIcon,
+  PackageIcon,
   PlusIcon,
   ShieldCheckIcon,
   SlidersIcon,
@@ -144,6 +145,7 @@ export default function AuthNavActions() {
             <div className="border-t border-[var(--line)] pt-2">
               <Link href="/profile" onClick={closeMenu} role="menuitem" className={menuLinkClass}><UserIcon size={18}/><span>โปรไฟล์ของฉัน</span></Link>
               <Link href="/dashboard" onClick={closeMenu} role="menuitem" className={menuLinkClass}><LayoutDashboardIcon size={18}/><span>Dashboard</span></Link>
+              <Link href="/posts" onClick={closeMenu} role="menuitem" className={menuLinkClass}><PackageIcon size={18}/><span>โพสต์ของฉัน</span></Link>
               <Link href="/settings" onClick={closeMenu} role="menuitem" className={menuLinkClass}><SlidersIcon size={18}/><span>ตั้งค่าบัญชี</span></Link>
               <Link href="/chat" onClick={closeMenu} role="menuitem" className={menuLinkClass}><MessageIcon size={18}/><span>ข้อความ</span></Link>
               <Link href="/notifications" onClick={closeMenu} role="menuitem" className={menuLinkClass}><BellIcon size={18}/><span>การแจ้งเตือน</span></Link>

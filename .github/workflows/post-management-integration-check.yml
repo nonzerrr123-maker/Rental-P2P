@@ -1,0 +1,135 @@
+name: Post management integration check
+
+on:
+  pull_request:
+    paths:
+      - "my-app/**"
+      - ".github/workflows/post-management-integration-check.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "my-app/**"
+      - ".github/workflows/post-management-integration-check.yml"
+
+jobs:
+  validate-post-management:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: p2p_rental
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d p2p_rental"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/p2p_rental
+      DATABASE_POOL_MAX: 6
+      KYC_PROVIDER: manual
+      NEXT_TELEMETRY_DISABLED: 1
+
+    defaults:
+      run:
+        working-directory: my-app
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply PostgreSQL schema and migrations
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/database-schema.sql
+          if [ -f scripts/run-migrations.mjs ]; then node scripts/run-migrations.mjs; fi
+
+      - name: Lint post management scope
+        run: >-
+          npx eslint
+          lib/rental/listing-edits.ts
+          app/api/rental-items/[id]/status/route.ts
+          app/posts/page.tsx
+          app/posts/post-management.tsx
+          components/auth-nav-actions.tsx
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start application
+        run: |
+          nohup npm run start -- -p 3000 > /tmp/posts-next.log 2>&1 &
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/api/health/db >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/posts-next.log
+          exit 1
+
+      - name: Register and verify owner and stranger
+        run: |
+          for spec in \
+            'Post Owner|post.owner@example.com|post-owner-pass-123|/tmp/post-owner.cookies' \
+            'Post Stranger|post.stranger@example.com|post-stranger-pass-123|/tmp/post-stranger.cookies'; do
+            IFS='|' read -r name email pass cookies <<< "$spec"
+            curl --fail --silent -X POST http://127.0.0.1:3000/api/auth/register -H 'Content-Type: application/json' --data "{\"displayName\":\"$name\",\"email\":\"$email\",\"password\":\"$pass\"}" >/dev/null
+            curl --fail --silent -c "$cookies" -X POST http://127.0.0.1:3000/api/auth/login -H 'Content-Type: application/json' --data "{\"email\":\"$email\",\"password\":\"$pass\"}" >/dev/null
+          done
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE users SET verification_status='VERIFIED' WHERE email IN ('post.owner@example.com','post.stranger@example.com');"
+
+      - name: Create owner listing
+        run: |
+          curl --fail --silent -b /tmp/post-owner.cookies -X POST http://127.0.0.1:3000/api/rental-items -H 'Content-Type: application/json' --data '{"title":"Post Management Camera","category":"กล้องและอุปกรณ์ถ่ายภาพ","description":"รายการสำหรับทดสอบระบบจัดการโพสต์","condition":"GOOD","hourlyRate":100,"dailyRate":700,"minimumHours":1,"depositAmount":1000,"province":"ชลบุรี","district":"เมืองชลบุรี"}' >/tmp/post-listing.json
+          node -e "const fs=require('fs'),d=require('/tmp/post-listing.json'); if(!d.ok)process.exit(1); fs.writeFileSync('/tmp/post-listing-id',d.item.id)"
+
+      - name: Stranger cannot manage listing status
+        run: |
+          id=$(cat /tmp/post-listing-id)
+          code=$(curl --silent --output /tmp/post-stranger-status.json --write-out '%{http_code}' -b /tmp/post-stranger.cookies -X PATCH http://127.0.0.1:3000/api/rental-items/$id/status -H 'Content-Type: application/json' --data '{"action":"PAUSE"}')
+          test "$code" = "403"
+          test "$(psql "$DATABASE_URL" -Atc "SELECT status FROM rental_items WHERE id='$id'")" = "ACTIVE"
+
+      - name: Owner can pause resume archive and restore
+        run: |
+          id=$(cat /tmp/post-listing-id)
+          for spec in 'PAUSE|PAUSED' 'RESUME|ACTIVE' 'ARCHIVE|ARCHIVED' 'RESTORE|ACTIVE'; do
+            IFS='|' read -r action expected <<< "$spec"
+            curl --fail --silent -b /tmp/post-owner.cookies -X PATCH http://127.0.0.1:3000/api/rental-items/$id/status -H 'Content-Type: application/json' --data "{\"action\":\"$action\"}" >/tmp/post-status.json
+            node -e "const d=require('/tmp/post-status.json'); if(!d.ok||d.item.status!=='$expected')process.exit(1)"
+            test "$(psql "$DATABASE_URL" -Atc "SELECT status FROM rental_items WHERE id='$id'")" = "$expected"
+          done
+
+      - name: Pausing listing disables urgent availability
+        run: |
+          id=$(cat /tmp/post-listing-id)
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE rental_items SET urgent_enabled=true WHERE id='$id';"
+          curl --fail --silent -b /tmp/post-owner.cookies -X PATCH http://127.0.0.1:3000/api/rental-items/$id/status -H 'Content-Type: application/json' --data '{"action":"PAUSE"}' >/dev/null
+          test "$(psql "$DATABASE_URL" -Atc "SELECT urgent_enabled FROM rental_items WHERE id='$id'")" = "f"
+
+      - name: My posts page renders authenticated owner data
+        run: |
+          curl --fail --silent -b /tmp/post-owner.cookies http://127.0.0.1:3000/posts >/tmp/posts-page.html
+          grep -q 'โพสต์ของฉัน' /tmp/posts-page.html
+          grep -q 'Post Management Camera' /tmp/posts-page.html
+          grep -q 'ของที่ฉันปล่อยยืม' /tmp/posts-page.html
+
+      - name: Show Next.js log on failure
+        if: failure()
+        run: cat /tmp/posts-next.log || true

@@ -171,3 +171,33 @@ export async function updateOwnerRentalListing(
   }
   throw new RentalListingMutationError(409, "ARCHIVED_LISTING", "Archived listings must be restored before editing");
 }
+
+export async function updateOwnerRentalListingStatus(
+  ownerId: string,
+  itemIdInput: unknown,
+  status: "ACTIVE" | "PAUSED" | "ARCHIVED",
+): Promise<RentalListing> {
+  const itemId = requireUuid(itemIdInput);
+  const updated = await query<RentalListingRow>(
+    `UPDATE rental_items
+     SET status = $3::listing_status,
+         urgent_enabled = CASE WHEN $3::listing_status = 'ACTIVE' THEN urgent_enabled ELSE false END,
+         updated_at = now()
+     WHERE id = $1 AND owner_id = $2
+     RETURNING
+       id, owner_id, title, category, description, condition, status,
+       hourly_rate, daily_rate, minimum_hours, deposit_amount,
+       urgent_enabled, urgent_reservation_fee_rate,
+       province, district, subdistrict, location_label, latitude, longitude,
+       created_at, updated_at`,
+    [itemId, ownerId, status],
+  );
+  if (updated.rows[0]) return mapRentalListing(updated.rows[0]);
+
+  const exists = await query<{ owner_id: string } & QueryResultRow>(
+    `SELECT owner_id FROM rental_items WHERE id = $1 LIMIT 1`,
+    [itemId],
+  );
+  if (!exists.rows[0]) throw new RentalListingMutationError(404, "NOT_FOUND", "Rental listing not found");
+  throw new RentalListingMutationError(403, "FORBIDDEN", "Only the listing owner can manage this post");
+}
