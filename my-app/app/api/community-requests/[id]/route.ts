@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { authorizationErrorResponse, requireVerifiedUser } from "@/lib/auth/authorization";
+import { notifyPendingLendersAboutCommunityEdit } from "@/lib/community/edit-notifications";
 import {
   CommunityError,
   expireStaleCommunityRequests,
@@ -47,7 +48,12 @@ export async function PATCH(
     } catch {
       return NextResponse.json({ ok: false, code: "INVALID_JSON", message: "Request body must be valid JSON" }, { status: 400 });
     }
+
+    const before = await getCommunityRequest(id);
     const item = await updateCommunityRequest(user.id, id, body);
+    if (before && before.requesterId === user.id) {
+      await notifyPendingLendersAboutCommunityEdit(before, item);
+    }
     return NextResponse.json({ ok: true, request: toPublicCommunityRequest(item) });
   } catch (error) {
     const auth = authorizationErrorResponse(error);
